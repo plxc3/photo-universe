@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#050708" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>Memoria · 照片宇宙</title>
+  </head>
+  <body>
+    <main id="app">
+      <div id="scene" aria-label="三维照片空间。拖动旋转，滚轮缩放，点击照片放大。"></div>
+      <header class="topbar">
+        <a class="brand" href="./" aria-label="Memoria 照片宇宙"><span class="brand-mark">✳</span><span>memoria<span class="brand-cn">照片宇宙</span></span></a>
+        <div class="top-actions"><span class="local-note"><i></i> 本地相册 · 私人宇宙</span><button class="button import-button" id="import"><span>＋</span> 导入照片</button><button class="icon-button" id="help" aria-label="使用说明">?</button></div>
+      </header>
+      <section class="intro"><span class="eyebrow">A LITTLE SPACE FOR EVERY MEMORY</span><h1>把瞬间，<br>放进宇宙。</h1><p>每一张照片，都是一颗星。</p><div class="collection-info"><span id="photo-count">正在整理照片</span><span class="dot">·</span><span id="particle-count">3,000 个瞬间</span></div></section>
+      <div class="scene-label"><span class="eyebrow">正在探索</span><div><span id="mode-name">星环</span><span class="scene-index" id="mode-index">01 / 04</span></div></div>
+      <div class="loader" id="loader" role="status"><span class="loader-orbit"></span><span id="loading-text">正在点亮你的宇宙…</span><progress id="loading-progress" max="100" value="0"></progress></div>
+      <div class="drop-target" id="drop-target"><span>把照片放在这里</span><p>JPG、PNG、WebP 等 · 最多 3,000 张</p></div>
+      <div class="error-card" id="error-card" hidden><h2>暂时无法打开宇宙</h2><p id="error-message"></p><button class="button" id="retry">重新打开</button></div>
+      <footer class="bottom-bar">
+        <div class="interaction-note"><span class="mouse-icon"></span><span>拖动旋转 · 滚动靠近<br><small>点击照片，拾起一个瞬间</small></span></div>
+        <div class="controls">
+          <nav class="mode-selector" aria-label="照片形态">
+            <button data-mode="orbit" aria-pressed="true"><span>✳</span>星环</button><button data-mode="tunnel" aria-pressed="false"><span>▱</span>隧道</button><button data-mode="sphere" aria-pressed="false"><span>◉</span>星球</button><button data-mode="helix" aria-pressed="false"><span>≋</span>螺旋</button>
+          </nav>
+          <div class="playback-controls"><button id="play" aria-label="暂停旋转">Ⅱ</button><button id="film"><span>▷</span> 30 秒漫游</button><span class="control-divider"></span><label for="speed">速度</label><input id="speed" type="range" min="0.2" max="2" value="0.7" step="0.1" aria-label="旋转速度"><button id="reset" aria-label="重置视角">↺</button></div>
+        </div>
+        <div class="utility-controls"><button class="icon-button" id="record" aria-label="录制 30 秒视频" title="录制 30 秒视频"><span class="record-dot"></span></button><button class="icon-button" id="clean" aria-label="隐藏界面" title="隐藏界面 · H">⌗</button><button class="icon-button" id="fullscreen" aria-label="进入全屏" title="进入全屏">⛶</button></div>
+      </footer>
+      <div class="film-status" id="film-status" hidden><span id="film-description">镜头漫游</span><span id="film-time">00:00 / 00:30</span><button id="stop-film">结束</button><progress id="film-progress" value="0" max="30"></progress></div>
+      <div class="toast" id="toast" role="status" hidden></div>
+      <button id="restore-ui" hidden>显示界面 <kbd>H</kbd></button>
+      <input type="file" id="file-input" accept="image/*,.heic,.heif" multiple hidden>
+      <dialog id="photo-dialog" aria-label="照片放大查看"><button class="dialog-close" aria-label="关闭照片">×</button><img id="photo-preview" alt=""><div class="photo-caption"><span id="photo-title"></span><span id="photo-number"></span></div><div class="photo-navigation"><button id="previous-photo" aria-label="上一张照片">←</button><button id="next-photo" aria-label="下一张照片">→</button></div></dialog>
+      <dialog id="help-dialog" aria-labelledby="help-title"><button class="dialog-close" aria-label="关闭说明">×</button><span class="eyebrow">WELCOME TO MEMORIA</span><h2 id="help-title">在照片之间，<br>慢慢漫游。</h2><p>拖动空间旋转视角，滚轮或双指缩放。点击照片可以放大查看，用左右键翻看。</p><p>「30 秒漫游」重现从星环进入旋转隧道，再回到星环的镜头。红色圆点可以录制并下载这段动画。</p><p>导入最多 3,000 张照片，或直接拖入窗口。照片只在当前浏览器内处理；刷新后恢复示例相册。HEIC 请先转换为 JPG。</p><div class="help-shortcuts"><span><kbd>空格</kbd> 暂停</span><span><kbd>H</kbd> 隐藏界面</span><span><kbd>Esc</kbd> 结束漫游</span></div><button id="demo" class="button">恢复示例相册</button><a class="reference-link" href="https://www.douyin.com/video/7692616221573117321" target="_blank" rel="noreferrer">参考 Elio 的三维照片作品 ↗</a></dialog>
+    </main>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
