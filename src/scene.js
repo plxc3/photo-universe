@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { createFormation } from './formations.js';
-import { sampleFlight, orbitFraming, orbitPosition, flightViewOffset, restingViewFractions, easeInOut, portraitAmount, restRotation, FILM } from './flight.js';
+import { sampleFlight, orbitFraming, orbitPosition, flightViewOffset, restingViewFractions, easeInOut, portraitAmount, restRotation, tunnelTwistAt, FILM } from './flight.js';
 
 const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
 // Idle orbit oscillation: group.rotation.x = sin(elapsed * OMEGA) * AMP.
@@ -59,6 +59,10 @@ export class PhotoUniverse {
     this.scene.add(this.parallaxGroup);
     this.pointerTarget = new THREE.Vector2();
     this.pointerCurrent = new THREE.Vector2();
+    this.hoverNdc = new THREE.Vector2();
+    this.hoverPointer = null;
+    this.lastHoverTime = -Infinity;
+    this.renderer.domElement.style.cursor = 'grab';
     this.dragging = false;
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
@@ -79,8 +83,9 @@ export class PhotoUniverse {
       this.dragging = true;
       this.viewTransition = null;
       this.pointerTarget.set(0, 0);
+      this.renderer.domElement.style.cursor = 'grabbing';
     });
-    this.controls.addEventListener('end', () => { this.dragging = false; });
+    this.controls.addEventListener('end', () => { this.dragging = false; this.renderer.domElement.style.cursor = this.film ? 'default' : 'grab'; });
     this.meshes = [];
     this.textures = [];
     this.instances = [];
@@ -102,6 +107,10 @@ export class PhotoUniverse {
     };
     this.instanceDirty = false; // instances need per-frame matrix recomputation
     this.boundsDirty = false;   // instanced bounding spheres are stale after morph
+    this.tunnelTwist = 0;
+    this.appliedTunnelTwist = 0;
+    this.tunnelLayers = [];
+    this.frozenFormation = false;
     this.dummy = new THREE.Object3D();
     this.quaternion = new THREE.Quaternion();
     this.euler = new THREE.Euler();
@@ -110,10 +119,19 @@ export class PhotoUniverse {
     this.renderer.domElement.addEventListener('pointerdown', event => { this.pointerDown = [event.clientX, event.clientY]; });
     this.renderer.domElement.addEventListener('pointermove', event => {
       if (!this.pointerEnabled || this.dragging || this.film || event.buttons || event.pointerType === 'touch') return;
+      this.hoverPointer = [event.clientX, event.clientY];
       const rect = this.renderer.domElement.getBoundingClientRect();
       this.pointerTarget.set(clamp((event.clientX - rect.left) / rect.width * 2 - 1, -1, 1), clamp((event.clientY - rect.top) / rect.height * 2 - 1, -1, 1));
     });
-    this.renderer.domElement.addEventListener('pointerleave', () => this.pointerTarget.set(0, 0));
+    this.renderer.domElement.addEventListener('pointerleave', () => {
+      this.pointerTarget.set(0, 0);
+      this.clearHover();
+    });
+    this.renderer.domElement.addEventListener('pointercancel', () => {
+      this.pointerDown = null;
+      this.pointerTarget.set(0, 0);
+      this.clearHover();
+    });
     this.renderer.domElement.addEventListener('pointerup', event => {
       if (!this.pointerDown || this.film) return;
       const distance = Math.hypot(event.clientX - this.pointerDown[0], event.clientY - this.pointerDown[1]);
@@ -252,6 +270,32 @@ export class PhotoUniverse {
     this.idleYawElapsed = 0;
   }
 
+  clearHover() {
+    this.hoverPointer = null;
+    if (this.renderer.domElement) this.renderer.domElement.style.cursor = this.film ? 'default' : this.dragging ? 'grabbing' : 'grab';
+  }
+
+  updateHover(time) {
+    if (!this.renderer.domElement) return;
+    if (!this.pointerEnabled || this.film || this.dragging || this.instanceDirty || !this.hoverPointer) {
+      this.renderer.domElement.style.cursor = this.film ? 'default' : this.dragging ? 'grabbing' : 'grab';
+      return;
+    }
+    if (time - this.lastHoverTime < 100) return;
+    this.lastHoverTime = time;
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    this.hoverNdc.set((this.hoverPointer[0] - rect.left) / rect.width * 2 - 1, -(this.hoverPointer[1] - rect.top) / rect.height * 2 + 1);
+    this.scene.updateMatrixWorld(true);
+    this.camera.updateMatrixWorld(true);
+    if (this.boundsDirty) {
+      for (const mesh of this.meshes) mesh.computeBoundingSphere();
+      this.boundsDirty = false;
+    }
+    this.raycaster.setFromCamera(this.hoverNdc, this.camera);
+    const hit = this.raycaster.intersectObjects(this.meshes, false)[0];
+    this.renderer.domElement.style.cursor = hit?.instanceId !== undefined ? 'pointer' : 'grab';
+  }
+
   // Dispose meshes/geometry/material/texture. With no `keepCanvases` (a direct
   // call) every backing CPU canvas is released too; when a set is supplied the
   // reused canvases are preserved so the next textures are not built on a
@@ -279,6 +323,11 @@ export class PhotoUniverse {
     this.boundsDirty = false;
     this.morph = null;
     this.reveal = null;
+    this.tunnelTwist = 0;
+    this.appliedTunnelTwist = 0;
+    this.tunnelLayers = [];
+    this.frozenFormation = false;
+    this.clearHover();
   }
 
   setPhotos(photos, atlases, count = 1200) {
@@ -305,7 +354,7 @@ export class PhotoUniverse {
       if (!batch.length) return;
       const texture = new THREE.CanvasTexture(atlas.canvas);
       texture.colorSpace = THREE.SRGBColorSpace;
-      texture.anisotropy = Math.min(4, this.renderer.capabilities.getMaxAnisotropy());
+      texture.anisotropy = Math.min(8, this.renderer.capabilities.getMaxAnisotropy());
       this.textures.push(texture);
       const geometry = new THREE.PlaneGeometry(1.08, 0.72);
       const rects = new Float32Array(batch.length * 4);
@@ -362,15 +411,20 @@ export class PhotoUniverse {
   setFormation(mode, instant = false, resetCamera = true, durationOverride = null) {
     const portrait = mode === 'orbit' ? portraitAmount(this.camera.aspect) : 0;
     const layoutChanged = Math.abs(portrait - (this.formationPortrait || 0)) > 1e-6;
-    if (this.mode === mode && !instant && !layoutChanged) {
+    if (this.mode === mode && !instant && !layoutChanged && !this.frozenFormation) {
       if (resetCamera) this.resetView(false);
       return;
     }
+    // Dynamic film geometry is in the matrices used by both rendering and
+    // raycasting. Start the next morph from that exact visible geometry.
+    this.bakeTunnelPose();
     this.mode = mode;
+    this.frozenFormation = false;
     this.formationPortrait = portrait;
     this.layoutAspect = this.camera.aspect;
     const targets = createFormation(mode, this.count || 0, portrait);
     const duration = this.reducedMotion ? 0 : (durationOverride ?? 2.2);
+    const layers = new Map();
     targets.forEach((target, index) => {
       const instance = this.instances[index];
       instance.fromPosition = instance.position.clone();
@@ -380,6 +434,12 @@ export class PhotoUniverse {
       instance.targetPosition.fromArray(target.position);
       instance.targetQuaternion.setFromEuler(this.euler.fromArray(target.rotation));
       instance.targetScale = target.scale;
+      instance.tunnelLayer = null;
+      if (mode === 'tunnel') {
+        const z = target.position[2];
+        if (!layers.has(z)) layers.set(z, { weight: ((65 - z) / 130) ** 1.6, cos: 1, sin: 0, quaternion: new THREE.Quaternion() });
+        instance.tunnelLayer = layers.get(z);
+      }
       if (instant) {
         instance.position.copy(instance.targetPosition);
         instance.quaternion.copy(instance.targetQuaternion);
@@ -387,6 +447,7 @@ export class PhotoUniverse {
         instance.settled = true;
       } else instance.settled = false;
     });
+    this.tunnelLayers = [...layers.values()];
     if (instant) this.writeInstanceMatrices();
     else { this.instanceDirty = true; this.boundsDirty = true; this.morph = { elapsed: 0, duration }; }
     if (resetCamera) {
@@ -398,20 +459,70 @@ export class PhotoUniverse {
   // Write every instance matrix once (used by instant paths / first frame),
   // then clear the dirty flag so steady state performs no per-frame work.
   writeInstanceMatrices() {
+    this.uploadInstanceMatrices();
+    this.instanceDirty = false;
+    this.morph = null;
+  }
+
+  // At most 55 sine/cosine/quaternion evaluations per frame, shared by all
+  // 3000 prints in those layers. Every print keeps its real dimensions.
+  uploadInstanceMatrices() {
+    const twist = this.tunnelTwist || 0;
+    for (const layer of this.tunnelLayers || []) {
+      const angle = twist * layer.weight;
+      layer.cos = Math.cos(angle);
+      layer.sin = Math.sin(angle);
+      layer.quaternion.set(0, 0, Math.sin(angle * 0.5), Math.cos(angle * 0.5));
+    }
     for (const instance of this.instances) {
       this.dummy.position.copy(instance.position);
       this.dummy.quaternion.copy(instance.quaternion);
+      if (twist && instance.tunnelLayer) {
+        const { cos, sin, quaternion } = instance.tunnelLayer;
+        const { x, y } = this.dummy.position;
+        this.dummy.position.x = x * cos - y * sin;
+        this.dummy.position.y = x * sin + y * cos;
+        this.dummy.quaternion.premultiply(quaternion);
+      }
       this.dummy.scale.setScalar(instance.scale);
       this.dummy.updateMatrix();
       instance.mesh.setMatrixAt(instance.localIndex, this.dummy.matrix);
     }
     for (const mesh of this.meshes) mesh.instanceMatrix.needsUpdate = true;
     this.boundsDirty = true;
-    this.instanceDirty = false;
-    this.morph = null;
+    this.appliedTunnelTwist = twist;
+  }
+
+  // Read the last displayed matrices rather than re-evaluating the effect at
+  // a newer clock time. Cancelling, resetting or choosing another formation
+  // therefore starts exactly where the user last saw the photographs.
+  bakeTunnelPose(freeze = false) {
+    const twisted = Boolean(this.appliedTunnelTwist);
+    const wasMorphing = this.instanceDirty;
+    if (twisted) {
+      for (const instance of this.instances) {
+        instance.mesh.getMatrixAt(instance.localIndex, this.dummy.matrix);
+        this.dummy.matrix.decompose(instance.position, instance.quaternion, this.dummy.scale);
+        instance.scale = this.dummy.scale.x;
+      }
+    }
+    this.tunnelTwist = 0;
+    this.appliedTunnelTwist = 0;
+    if (freeze && (twisted || wasMorphing)) {
+      for (const instance of this.instances) {
+        instance.targetPosition.copy(instance.position);
+        instance.targetQuaternion.copy(instance.quaternion);
+        instance.targetScale = instance.scale;
+        instance.settled = true;
+      }
+      this.instanceDirty = false;
+      this.morph = null;
+      this.frozenFormation = true;
+    }
   }
 
   resetView(instant = false) {
+    if (this.frozenFormation) this.setFormation(this.mode, instant, false);
     if (this.mode === 'orbit' && this.instances.length && Math.abs(portraitAmount(this.camera.aspect) - (this.formationPortrait || 0)) > 1e-6) {
       this.setFormation('orbit', instant, false);
     }
@@ -464,6 +575,7 @@ export class PhotoUniverse {
     const view = this.camera.view;
     const startPose = { position: this.camera.position.toArray(), target: this.controls.target.toArray(), up: this.camera.up.toArray(), fov: this.camera.fov, rotation: [this.group.rotation.x, this.group.rotation.y, this.group.rotation.z] };
     this.film = { start: performance.now(), phase: 'orbit', elapsed: 0, startPose, startOffset: { x: view?.enabled ? view.offsetX / view.fullWidth : 0, y: view?.enabled ? view.offsetY / view.fullHeight : 0 } };
+    this.clearHover();
     this.heldViewOffset = null;
     this.viewTransition = null;
     this.controls.enabled = false;
@@ -484,7 +596,9 @@ export class PhotoUniverse {
     const natural = this.film.natural === true;
     const view = this.camera.view;
     const offset = { x: view?.enabled ? view.offsetX / view.fullWidth : 0, y: view?.enabled ? view.offsetY / view.fullHeight : 0 };
+    if (!natural) this.bakeTunnelPose(true);
     this.film = null;
+    this.clearHover();
     this.controls.enabled = true;
     this.flushDamping();
     this.alignIdlePhase();
@@ -519,6 +633,7 @@ export class PhotoUniverse {
       // Morph to the new formation without disturbing the cinematic camera.
       this.setFormation(s.mode, false, false);
     }
+    this.tunnelTwist = tunnelTwistAt(elapsed);
     this.callbacks.onFilmProgress?.(elapsed);
     if (elapsed >= FILM.total) { this.film.natural = true; this.stopFilm(true, false); }
   }
@@ -536,6 +651,8 @@ export class PhotoUniverse {
     this.film.phase = sample.mode;
     this.film.manual = true;
     this.film.elapsed = target;
+    this.tunnelTwist = tunnelTwistAt(target);
+    this.writeInstanceMatrices();
     this.camera.position.fromArray(sample.position);
     this.camera.up.fromArray(sample.up);
     this.camera.fov = sample.fov;
@@ -606,7 +723,8 @@ export class PhotoUniverse {
     }
     // A fixed 2.2s eased morph has zero starting/ending velocity, remains active
     // while rotation is paused, and performs its final GPU upload exactly once.
-    if (this.instanceDirty && this.instances.length) {
+    const morphing = this.instanceDirty;
+    if (morphing && this.instances.length) {
       const morph = this.morph;
       if (morph) morph.elapsed = Math.min(morph.duration, morph.elapsed + dt);
       const done = this.reducedMotion || !morph || morph.elapsed >= morph.duration;
@@ -622,16 +740,13 @@ export class PhotoUniverse {
           instance.quaternion.slerpQuaternions(instance.fromQuaternion, instance.targetQuaternion, progress);
           instance.scale = THREE.MathUtils.lerp(instance.fromScale, instance.targetScale, progress);
         }
-        this.dummy.position.copy(instance.position);
-        this.dummy.quaternion.copy(instance.quaternion);
-        this.dummy.scale.setScalar(instance.scale);
-        this.dummy.updateMatrix();
-        instance.mesh.setMatrixAt(instance.localIndex, this.dummy.matrix);
       }
-      for (const mesh of this.meshes) mesh.instanceMatrix.needsUpdate = true;
-      this.boundsDirty = true;
       if (done) { this.instanceDirty = false; this.morph = null; }
     }
+    // Film twist is an actual geometry transform, so picking and the picture
+    // agree. Once both morph and effect settle, no matrices are uploaded.
+    if (this.instances.length && (morphing || (this.tunnelTwist || 0) !== (this.appliedTunnelTwist || 0))) this.uploadInstanceMatrices();
+    this.updateHover(time);
     this.renderer.render(this.scene, this.camera);
     this.callbacks.onFrame?.(time);
   }

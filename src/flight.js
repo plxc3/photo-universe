@@ -1,5 +1,5 @@
 // One camera rig for the resting sculpture and its thirty-second film.
-export const FILM = { total: 29.65, phase1: 5.5, phase2End: 21.8 };
+export const FILM = { total: 29.65, phase1: 5.5, phase2End: 21.8, exitEnd: 24.6 };
 export const ORBIT_CONTENT_RADIUS = 25;
 export const REST_ROTATION = [-0.08, -0.68, -0.15];
 export const PORTRAIT_ROTATION = [-1.05, 0.22, 2.20];
@@ -12,6 +12,15 @@ export function easeInOut(value) {
   return t * t * t * (t * (t * 6 - 15) + 10);
 }
 const envelope = u => Math.sin(Math.PI * u) ** 2;
+
+// The physical corridor begins straight, winds into a depth-dependent vortex,
+// then returns to a straight corridor before the sculpture reforms. The eased
+// envelope has zero velocity and acceleration at both ends.
+export function tunnelTwistAt(seconds) {
+  const t = Number.isFinite(seconds) ? seconds : 0;
+  if (t <= FILM.phase1 || t >= FILM.phase2End) return 0;
+  return envelope(easeInOut((t - FILM.phase1) / (FILM.phase2End - FILM.phase1))) * 4.2;
+}
 
 export function portraitAmount(aspect = 16 / 9) {
   const a = Number.isFinite(aspect) && aspect > 0 ? aspect : 16 / 9;
@@ -65,7 +74,7 @@ export function flightViewOffset(seconds, restingX = 0, restingY = 0, start = nu
     return { x: (start?.x ?? restingX) * k, y: (start?.y ?? restingY) * k };
   }
   if (t < FILM.phase2End) return { x: 0, y: 0 };
-  const s = easeInOut((t - FILM.phase2End) / (FILM.total - FILM.phase2End));
+  const s = easeInOut((t - FILM.phase2End) / (FILM.exitEnd - FILM.phase2End));
   return { x: restingX * s, y: restingY * s };
 }
 
@@ -106,15 +115,23 @@ export function sampleFlight(seconds, aspect = 16 / 9, startPose = null) {
       rotation: [0, 0, roll],
     };
   }
-  const u = (t - FILM.phase2End) / (FILM.total - FILM.phase2End);
+  if (t >= FILM.exitEnd) {
+    const settle = easeInOut((t - FILM.exitEnd) / (FILM.total - FILM.exitEnd));
+    const distance = lerp(1.1, 1, settle);
+    return {
+      mode: 'orbit', position: end.map(value => value * distance), target: [0, 0, 0],
+      up: [0, 1, 0], fov: 54, rotation: restingRotation,
+    };
+  }
+  const u = (t - FILM.phase2End) / (FILM.exitEnd - FILM.phase2End);
   const settle = easeInOut(u);
-  const spiral = envelope(settle) * 0.85;
+  const spiral = envelope(settle) * 0.65;
   return {
     mode: 'orbit',
     position: [
-      lerp(0, end[0], settle) + spiral * Math.sin(2 * Math.PI * u),
-      lerp(0, end[1], settle) + spiral * 0.35 * Math.sin(3 * Math.PI * u),
-      lerp(2, end[2], settle) + spiral * Math.cos(2 * Math.PI * u),
+      lerp(0, end[0] * 1.1, settle) + spiral * Math.sin(2 * Math.PI * u),
+      lerp(0, end[1] * 1.1, settle) + spiral * 0.35 * Math.sin(3 * Math.PI * u),
+      lerp(2, end[2] * 1.1, settle) + spiral * Math.cos(2 * Math.PI * u),
     ],
     target: [0, 0, lerp(-74, 0, settle)],
     up: [0, 1, 0],

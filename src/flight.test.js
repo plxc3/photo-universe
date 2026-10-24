@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
-import { sampleFlight, orbitFraming, orbitPosition, portraitAmount, restRotation, FILM, REST_ROTATION } from './flight.js';
+import { sampleFlight, orbitFraming, orbitPosition, portraitAmount, restRotation, tunnelTwistAt, FILM, REST_ROTATION } from './flight.js';
 import { PhotoUniverse } from './scene.js';
 
 const DESKTOP = 16 / 9;
@@ -355,7 +355,7 @@ test('behaviour: clearPhotos releases stale canvases but keeps reused ones', () 
 test('film boundaries have matching zero velocity for camera, target, FOV and rotation', () => {
   const step = 1e-3;
   for (const aspect of [DESKTOP, MOBILE]) {
-    for (const t of [FILM.phase1, FILM.phase2End, FILM.total]) {
+    for (const t of [FILM.phase1, FILM.phase2End, FILM.exitEnd, FILM.total]) {
       const at = sampleFlight(t, aspect);
       for (const sample of [sampleFlight(t - step, aspect), sampleFlight(t + step, aspect)]) {
         assert.ok(dist(at.position, sample.position) / step < 0.01, `camera velocity boundary ${t}`);
@@ -634,4 +634,152 @@ test('onFrame is optional and runs after each actual render, excluding hidden id
   globalThis.document.hidden = false;
   delete O.callbacks.onFrame;
   assert.doesNotThrow(() => O.animate(48));
+});
+
+test('the tunnel is straight at eight seconds, winds deeply at fourteen and returns smoothly', () => {
+  assert.ok(tunnelTwistAt(8) < 0.04, 'the entrance remains a legible square corridor');
+  assert.ok(tunnelTwistAt(14) > 4, 'the middle has more than a full half-turn of depth variation');
+  assert.equal(tunnelTwistAt(FILM.phase1), 0);
+  assert.equal(tunnelTwistAt(FILM.phase2End), 0);
+  for (const boundary of [FILM.phase1, FILM.phase2End]) {
+    for (const offset of [-0.001, 0.001]) assert.ok(Math.abs(tunnelTwistAt(boundary + offset)) < 1e-9);
+  }
+  for (const bad of [undefined, NaN, Infinity, -Infinity]) assert.equal(tunnelTwistAt(bad), 0);
+});
+
+test('the complete sculpture is framed by 24.6 seconds and gently settles into the exact resting pose', () => {
+  for (const aspect of [390 / 844, 16 / 9]) {
+    const arrival = sampleFlight(FILM.exitEnd, aspect);
+    assert.deepEqual(arrival.target, [0, 0, 0]);
+    assert.deepEqual(arrival.rotation, restRotation(aspect));
+    assert.equal(arrival.fov, 54);
+    assert.ok(Math.abs(Math.hypot(...arrival.position) / orbitFraming(aspect).distance - 1.1) < 1e-12);
+    let previousDistance = Math.hypot(...arrival.position);
+    for (let time = FILM.exitEnd + 0.05; time <= FILM.total; time += 0.05) {
+      const pose = sampleFlight(time, aspect);
+      const distance = Math.hypot(...pose.position);
+      assert.ok(distance <= previousDistance + 1e-10, 'the final reveal settles without a second pull-back');
+      assert.deepEqual(pose.rotation, restRotation(aspect));
+      assert.deepEqual(pose.target, [0, 0, 0]);
+      previousDistance = distance;
+    }
+  }
+});
+
+function inspectTunnelAt(time, count = 3000) {
+  const O = buildHarness(1280, 720);
+  loadActualPhotos(O, 24, count);
+  O.running = false;
+  O.reveal = null;
+  O.film = { start: 0, phase: 'tunnel', elapsed: time, manual: true };
+  O.setFormation('tunnel', true, false);
+  O.updateFilm(time * 1000);
+  O.lastTime = time * 1000 - 16;
+  O.animate(time * 1000);
+  return O;
+}
+
+test('the vortex transforms real instance geometry without warping prints or allocating one layer per photo', () => {
+  const O = inspectTunnelAt(14);
+  assert.equal(O.tunnelLayers.length, 55);
+  assert.equal(new Set(O.instances.map(instance => instance.tunnelLayer)).size, 55);
+  const matrix = new THREE.Matrix4(), position = new THREE.Vector3(), quaternion = new THREE.Quaternion(), scale = new THREE.Vector3();
+  let rotated = 0;
+  for (const instance of O.instances) {
+    instance.mesh.getMatrixAt(instance.localIndex, matrix);
+    matrix.decompose(position, quaternion, scale);
+    assert.ok(Math.abs(position.z - instance.position.z) < 1e-5, 'the winding retains axial depth');
+    assert.ok(Math.abs(Math.hypot(position.x, position.y) - Math.hypot(instance.position.x, instance.position.y)) < 2e-6, 'the open passage is preserved');
+    assert.ok(Math.abs(scale.x - scale.y) < 1e-6 && Math.abs(scale.y - scale.z) < 1e-6, 'each photograph remains undistorted');
+    if (position.distanceTo(instance.position) > 1) rotated++;
+  }
+  assert.ok(rotated > O.count * 0.75, 'the effect is present in the same matrices used by raycasting');
+  assert.ok(O.textures.every(texture => texture.anisotropy === 8));
+  O.clearPhotos();
+});
+
+test('cancelling the vortex freezes its visible matrices and resetting eases to the straight corridor', () => {
+  const O = inspectTunnelAt(14);
+  const matrices = O.meshes.map(mesh => Array.from(mesh.instanceMatrix.array));
+  const versions = O.meshes.map(mesh => mesh.instanceMatrix.version);
+  O.stopFilm(false);
+  assert.equal(O.frozenFormation, true);
+  assert.equal(O.appliedTunnelTwist, 0);
+  for (let time = 14016; time <= 14200; time += 16) O.animate(time);
+  assert.deepEqual(O.meshes.map(mesh => Array.from(mesh.instanceMatrix.array)), matrices, 'cancellation does not snap to canonical geometry');
+  assert.deepEqual(O.meshes.map(mesh => mesh.instanceMatrix.version), versions, 'the frozen shot has no continuing matrix uploads');
+  O.resetView(false);
+  assert.deepEqual(O.meshes.map(mesh => Array.from(mesh.instanceMatrix.array)), matrices, 'the reset begins at the visible matrices');
+  for (let time = 14220; time <= 16500; time += 20) O.animate(time);
+  assert.equal(O.frozenFormation, false);
+  assert.equal(O.instanceDirty, false);
+  const settledVersions = O.meshes.map(mesh => mesh.instanceMatrix.version);
+  for (let time = 16520; time <= 16700; time += 20) O.animate(time);
+  assert.deepEqual(O.meshes.map(mesh => mesh.instanceMatrix.version), settledVersions);
+  for (const instance of O.instances) {
+    assert.ok(instance.position.equals(instance.targetPosition));
+    assert.ok(Math.abs(Math.max(Math.abs(instance.position.x), Math.abs(instance.position.y)) - 12) < 1e-9);
+  }
+  O.clearPhotos();
+});
+
+test('changing formation after a vortex cancellation starts from the displayed pose and settles cleanly', () => {
+  const O = inspectTunnelAt(14);
+  O.stopFilm(false);
+  const before = O.meshes.map(mesh => Array.from(mesh.instanceMatrix.array));
+  const identity = O.instances.map(instance => instance.mesh.userData.photoIndices[instance.localIndex]);
+  O.setFormation('sphere', false, false);
+  assert.deepEqual(O.meshes.map(mesh => Array.from(mesh.instanceMatrix.array)), before);
+  for (let time = 14020; time <= 16300; time += 20) O.animate(time);
+  assert.equal(O.instanceDirty, false);
+  assert.equal(O.tunnelLayers.length, 0);
+  for (const instance of O.instances) assert.ok(Math.abs(instance.position.length() - 20) < 1e-9);
+  assert.deepEqual(O.instances.map(instance => instance.mesh.userData.photoIndices[instance.localIndex]), identity, 'the morph never changes photo identity');
+  const versions = O.meshes.map(mesh => mesh.instanceMatrix.version);
+  O.animate(16320); O.animate(16340);
+  assert.deepEqual(O.meshes.map(mesh => mesh.instanceMatrix.version), versions);
+  O.clearPhotos();
+});
+
+test('photo hover follows real raycast hits, is limited to ten checks per second and yields during interaction', () => {
+  const O = buildHarness(100, 100);
+  O.renderer.domElement = { style: {}, getBoundingClientRect: () => ({ left: 0, top: 0, width: 100, height: 100 }) };
+  O.camera.position.set(0, 0, 10);
+  O.camera.lookAt(0, 0, 0);
+  O.hoverNdc = new THREE.Vector2();
+  O.hoverPointer = [50, 50];
+  O.lastHoverTime = -Infinity;
+  O.pointerEnabled = true;
+  O.raycaster = new THREE.Raycaster();
+  const mesh = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial(), 1);
+  mesh.setMatrixAt(0, new THREE.Matrix4());
+  O.meshes.push(mesh);
+  O.scene.add(mesh);
+  O.boundsDirty = true;
+  let checks = 0;
+  const intersect = O.raycaster.intersectObjects.bind(O.raycaster);
+  O.raycaster.intersectObjects = (...args) => { checks++; return intersect(...args); };
+  O.updateHover(0);
+  assert.equal(O.renderer.domElement.style.cursor, 'pointer', 'a visible photo is clickable');
+  O.hoverPointer = [100, 100];
+  O.updateHover(50);
+  assert.equal(checks, 1, 'the next check is throttled');
+  O.updateHover(100);
+  assert.equal(O.renderer.domElement.style.cursor, 'grab', 'empty canvas retains the orbit affordance');
+  assert.equal(checks, 2);
+  O.dragging = true;
+  O.updateHover(200);
+  assert.equal(O.renderer.domElement.style.cursor, 'grabbing');
+  O.dragging = false;
+  O.film = {};
+  O.updateHover(300);
+  assert.equal(O.renderer.domElement.style.cursor, 'default');
+  O.film = null;
+  O.instanceDirty = true;
+  O.updateHover(400);
+  assert.equal(checks, 2, 'morphs, dragging and film do not run hover raycasts');
+  O.clearHover();
+  assert.equal(O.hoverPointer, null);
+  assert.equal(O.renderer.domElement.style.cursor, 'grab');
+  O.clearPhotos();
 });

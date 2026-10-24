@@ -29,8 +29,13 @@ let filmFocus;
 let profileTimer;
 let lastProfileDisplay = 0;
 let galleryGeneration = 0;
+let galleryAbort;
+let photoGeneration = 0;
+let photoRequest;
+let photoPointer;
 const galleryUrls = new Set();
 const PAGE_SIZE = 24;
+const SCENE_POSITIONS = 3000;
 
 drawIcons();
 function toast(message) {
@@ -58,7 +63,16 @@ function showPhoto(index) {
   if (position < 0) return;
   selectedPhoto = position;
   const photo = photos[index];
-  $('photo-preview').src = photo.url;
+  const generation = ++photoGeneration;
+  if (photoRequest) photoRequest.src = '';
+  const request = photoRequest = new Image();
+  $('photo-preview').hidden = true;
+  $('photo-preview').removeAttribute('src');
+  $('photo-stage').setAttribute('aria-busy', 'true');
+  $('photo-stage').dataset.state = 'loading';
+  $('photo-feedback').hidden = false;
+  $('photo-status').textContent = '正在打开照片';
+  $('photo-retry').hidden = true;
   $('photo-preview').alt = photo.name;
   $('photo-title').textContent = photo.source === 'demo' && photo.author ? photo.author : photo.name;
   $('photo-number').textContent = (position + 1).toLocaleString() + ' / ' + validPhotoIndices.length.toLocaleString();
@@ -67,6 +81,23 @@ function showPhoto(index) {
     if (universe) universe.running = false;
     $('photo-dialog').showModal();
   }
+  request.src = photo.url;
+  request.decode().then(() => {
+    if (generation !== photoGeneration || !$('photo-dialog').open) return;
+    $('photo-preview').src = photo.url;
+    $('photo-preview').hidden = false;
+    $('photo-feedback').hidden = true;
+    $('photo-stage').dataset.state = 'ready';
+    $('photo-stage').setAttribute('aria-busy', 'false');
+    photoRequest = null;
+  }).catch(() => {
+    if (generation !== photoGeneration || !$('photo-dialog').open) return;
+    $('photo-stage').dataset.state = 'error';
+    $('photo-stage').setAttribute('aria-busy', 'false');
+    $('photo-status').textContent = '这张照片暂时无法打开';
+    $('photo-retry').hidden = false;
+    photoRequest = null;
+  });
 }
 function nextPhoto(step) {
   if (!validPhotoIndices.length || busy) return;
@@ -75,6 +106,8 @@ function nextPhoto(step) {
 }
 function clearGalleryThumbnails() {
   galleryGeneration++;
+  galleryAbort?.abort();
+  galleryAbort = null;
   for (const url of galleryUrls) URL.revokeObjectURL(url);
   galleryUrls.clear();
   $('gallery-grid').replaceChildren();
@@ -87,6 +120,7 @@ function releaseAtlasCanvases(atlases) {
 }
 function renderGallery() {
   clearGalleryThumbnails();
+  galleryAbort = new AbortController();
   const generation = galleryGeneration;
   const grid = $('gallery-grid');
   const start = galleryPage * PAGE_SIZE;
@@ -104,16 +138,20 @@ function renderGallery() {
     button.append(img);
     button.addEventListener('click', () => showPhoto(index));
     grid.append(button);
-    if (photo.source !== 'demo') getPhotoThumbnail(photo).then(({ url, owned }) => {
-      if (generation !== galleryGeneration || !button.isConnected) {
-        if (owned) URL.revokeObjectURL(url);
-        return;
-      }
-      if (owned) galleryUrls.add(url);
-      img.src = url;
-    }).catch(() => {
-      if (generation === galleryGeneration && button.isConnected) img.src = photo.url;
-    });
+    if (photo.source !== 'demo') {
+      const applyThumbnail = ({ url, owned }, quality = false) => {
+        if (generation !== galleryGeneration || !button.isConnected || (!quality && img.dataset.quality === 'ready')) {
+          if (owned) URL.revokeObjectURL(url);
+          return;
+        }
+        if (owned) galleryUrls.add(url);
+        if (quality) img.dataset.quality = 'ready';
+        img.src = url;
+      };
+      getPhotoThumbnail(photo).then(applyThumbnail).catch(() => {});
+      getPhotoThumbnail(photo, 360, { quality: true, signal: galleryAbort.signal })
+        .then(thumbnail => applyThumbnail(thumbnail, true)).catch(() => {});
+    }
   }
   $('gallery-range').textContent = validPhotoIndices.length ? (start + 1).toLocaleString() + '–' + end.toLocaleString() + ' / ' + validPhotoIndices.length.toLocaleString() : '0';
   $('gallery-previous').disabled = start === 0;
@@ -138,6 +176,7 @@ function setBusy(value) {
 }
 async function importPhotos(files) {
   if (busy || pageDisposed) return;
+  galleryAbort?.abort();
   if (universe?.film) { universe.stopFilm(true, false); universe.setFormation('orbit'); }
   // Close the inner lightbox before its album so the original play state wins.
   if ($('photo-dialog').open) $('photo-dialog').close();
@@ -164,7 +203,7 @@ async function importPhotos(files) {
     if (!indices.length) throw new Error('这些照片无法解码。请转换为 JPG 或 PNG 后重新导入。');
     const skipped = (result.skipped || 0) + (pendingAtlases.diagnostics?.skippedCount || 0);
     const nextFallbackAtlases = universe ? [] : pendingAtlases;
-    if (universe) universe.setPhotos(pendingPhotos, pendingAtlases, Math.max(1200, indices.length));
+    if (universe) universe.setPhotos(pendingPhotos, pendingAtlases, Math.max(SCENE_POSITIONS, indices.length));
     // No dialog can retain a blob from the album we are about to release.
     for (const dialog of document.querySelectorAll('dialog[open]')) dialog.close();
     clearGalleryThumbnails();
@@ -181,7 +220,7 @@ async function importPhotos(files) {
     releaseAtlasCanvases(oldFallbackAtlases);
     $('photo-count').textContent = indices.length.toLocaleString() + ' 张照片';
     $('collection').setAttribute('aria-label', '浏览相册，' + indices.length.toLocaleString() + ' 张照片');
-    $('particle-count').textContent = Math.max(1200, indices.length).toLocaleString() + ' 个照片位置';
+    $('particle-count').textContent = Math.max(SCENE_POSITIONS, indices.length).toLocaleString() + ' 个照片位置';
     $('gallery-title').textContent = files ? '我的相册' : '精选相册';
     if (files) toast('已导入 ' + indices.length.toLocaleString() + ' 张' + (skipped ? '，跳过 ' + skipped + ' 个无法读取的文件' : '') + '。照片保留在本地。');
     else if (skipped) toast(skipped + ' 张照片暂时无法读取。');
@@ -367,6 +406,10 @@ $('gallery-dialog').addEventListener('close', () => {
   syncPlaying();
 });
 $('photo-dialog').addEventListener('close', () => {
+  photoGeneration++;
+  if (photoRequest) photoRequest.src = '';
+  photoRequest = null;
+  photoPointer = null;
   if (universe) universe.running = previousPlaying;
   $('photo-preview').removeAttribute('src');
   syncPlaying();
@@ -375,6 +418,18 @@ $('gallery-previous').addEventListener('click', () => { galleryPage--; renderGal
 $('gallery-next').addEventListener('click', () => { galleryPage++; renderGallery(); });
 $('previous-photo').addEventListener('click', () => nextPhoto(-1));
 $('next-photo').addEventListener('click', () => nextPhoto(1));
+$('photo-retry').addEventListener('click', () => showPhoto(validPhotoIndices[selectedPhoto]));
+$('photo-stage').addEventListener('pointerdown', event => {
+  if (event.pointerType === 'touch') photoPointer = { x: event.clientX, y: event.clientY, id: event.pointerId };
+});
+$('photo-stage').addEventListener('pointercancel', () => { photoPointer = null; });
+$('photo-stage').addEventListener('pointerup', event => {
+  if (!photoPointer || photoPointer.id !== event.pointerId) return;
+  const dx = event.clientX - photoPointer.x;
+  const dy = event.clientY - photoPointer.y;
+  photoPointer = null;
+  if (Math.abs(dx) >= 48 && Math.abs(dx) > Math.abs(dy) * 1.5) nextPhoto(dx < 0 ? 1 : -1);
+});
 document.querySelectorAll('[data-mode]').forEach(button => button.addEventListener('click', () => {
   if (!universe || busy) return;
   leaveFilm(false);
@@ -454,4 +509,13 @@ if (inspecting) {
   $('inspection-panel').hidden = false;
   $('sample-performance').addEventListener('click', startProfile);
   $('stop-performance').addEventListener('click', finishProfile);
+  document.querySelectorAll('[data-inspect-seek]').forEach(button => button.addEventListener('click', () => {
+    if (busy || !universe || !photos.length) return;
+    const seconds = Number(button.dataset.inspectSeek);
+    showFilmChrome(true);
+    $('film-description').textContent = '镜头预览';
+    universe.debugSeekFilm(seconds);
+    $('film-time').textContent = '00:' + seconds + ' / 00:30';
+    $('film-progress').value = seconds;
+  }));
 }

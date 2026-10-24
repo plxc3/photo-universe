@@ -59,12 +59,23 @@ test("tunnel keeps a clear axial passage and square photo frames", () => {
     assert.ok(Math.hypot(x, y) >= 12 - 1e-9, "no photo intrudes into the tunnel");
     assert.ok(Math.hypot(x, y) <= Math.SQRT2 * 12 + 1e-9);
     assert.ok(Math.abs(z) <= 65);
-    const progress = (z + 65) / 130;
-    const angle = -(progress - 0.5) * 1.2;
-    const localX = x * Math.cos(angle) - y * Math.sin(angle);
-    const localY = x * Math.sin(angle) + y * Math.cos(angle);
-    assert.ok(Math.abs(Math.max(Math.abs(localX), Math.abs(localY)) - 12) < 1e-9);
+    assert.ok(Math.abs(Math.max(Math.abs(x), Math.abs(y)) - 12) < 1e-9, 'the resting corridor has straight square walls');
   }
+});
+
+test('dense tunnel prints leave black gaps between the square frames', () => {
+  const formation = createFormation('tunnel', 3000);
+  const rows = new Map();
+  for (const card of formation) {
+    if (!rows.has(card.position[2])) rows.set(card.position[2], []);
+    rows.get(card.position[2]).push(card);
+  }
+  for (const cards of rows.values()) {
+    const spacing = 96 / cards.length;
+    assert.ok(1.08 * cards[0].scale / spacing <= 0.81, 'dense rows reserve at least 19% of their perimeter for negative space');
+    assert.ok(1.08 * cards[0].scale / spacing > 0.75, 'prints remain readable at full tunnel density');
+  }
+  assert.ok(createFormation('tunnel', 1200).every(card => card.scale === 1.8), 'the less dense tunnel retains its established size');
 });
 
 test("sphere lies on a Fibonacci shell and helix stays within viewing bounds", () => {

@@ -132,13 +132,11 @@ function tunnel(count) {
   layerCounts(count, layers).forEach((size, layer) => {
     const progress = layers === 1 ? 0.5 : layer / (layers - 1);
     const z = progress * 130 - 65;
-    const twist = (progress - 0.5) * 1.2;
     for (let index = 0; index < size; index += 1) {
       const point = squarePoint((index + (layer % 2) * 0.5) / size, radius);
-      const position = rotateZ(point.position, twist);
+      const position = point.position;
       position[2] = z;
-      const tangent = rotateZ([1, 0, 0], twist * 0.12);
-      result.push({ position, rotation: photoRotation(tangent, [0, 0, 1]), scale: count <= 1500 ? 1.80 : 1.50 });
+      result.push({ position, rotation: photoRotation([1, 0, 0], [0, 0, 1]), scale: count <= 1500 ? 1.80 : 1.30 });
     }
   });
   return result;

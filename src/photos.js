@@ -10,11 +10,15 @@ const MAX_IMAGE_EDGE = 32768;
 const ATLAS_COLUMNS = 16;
 const ATLAS_CAPACITY = 256;
 const MIB = 1024 * 1024;
-const CELL_SIZES = [192, 128, 96, 64, 48, 32, 16];
+const CELL_SIZES = [384, 256, 192, 128, 96, 64, 48, 32, 16];
 const HEADER_BYTES = 512 * 1024;
 const localFiles = new WeakMap();
 const atlasCells = new WeakMap();
 let importSequence = 0;
+// Gallery pages request only the visible images. Keep their original-image
+// decodes serial even when several gallery instances call this module at once.
+const thumbnailQueue = [];
+let thumbnailDecodeActive = false;
 
 const yieldToBrowser = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -260,7 +264,9 @@ function atlasBudget(count, options) {
   const maxTextureSize = Math.floor(positiveOption(options.maxTextureSize, 2048, 'maxTextureSize'));
   const maxAtlasBytes = positiveOption(options.maxAtlasBytes, (lowMemory ? 32 : mobile ? 48 : 64) * MIB, 'maxAtlasBytes');
   const preferred = count > ATLAS_CAPACITY ? (lowMemory ? 48 : 64)
-    : count <= 32 && !mobile && maxTextureSize >= 3072 ? 192 : 128;
+    : count <= 32 && !mobile && !lowMemory
+      ? maxTextureSize >= 6144 ? 384 : maxTextureSize >= 4096 ? 256 : maxTextureSize >= 3072 ? 192 : 128
+      : 128;
   const desired = positiveOption(options.cellSize, preferred, 'cellSize');
   const cellSize = CELL_SIZES.find(size => size <= desired && size * ATLAS_COLUMNS <= maxTextureSize
     && plannedCanvasBytes(count, size) <= maxAtlasBytes);
@@ -464,13 +470,21 @@ export async function buildPhotoAtlases(photos, onProgress, options = {}) {
 }
 
 /**
- * Local albums reuse the existing atlas: no second full-image decode. The caller
- * owns a returned blob: URL and must revoke it when its gallery page closes.
- * Demo images use their bundled thumbnail URL. Before/after atlas availability,
- * fall back to the existing image URL (which this function does not own).
+ * Local albums reuse the existing atlas by default. With { quality: true },
+ * decode only this visible photograph from the local original, at its native
+ * aspect ratio and at most 720px on its longest edge (360px by default). Quality
+ * requests share one serial queue and support AbortSignal cancellation.
+ * The caller owns a returned blob: URL and must revoke it when the page closes.
+ * Demo images use their bundled thumbnail URL. Without a live local original or
+ * atlas, fall back to the existing image URL (which this function does not own).
  */
-export async function getPhotoThumbnail(photo, maxEdge = 360) {
+export async function getPhotoThumbnail(photo, maxEdge = 360, options = {}) {
+  throwIfAborted(options.signal);
   if (photo.source === 'demo') return { url: photo.thumbnailUrl || photo.url, owned: false };
+  if (options.quality && localFiles.has(photo)) {
+    const edge = Math.min(720, positiveOption(maxEdge, 360, 'maxEdge'));
+    return queueThumbnail(() => createQualityThumbnail(photo, edge, options.signal), options.signal);
+  }
   const cell = atlasCells.get(photo);
   if (!cell?.canvas.width || !cell.canvas.height) return { url: photo.thumbnailUrl || photo.url, owned: false };
   const { canvas: source, slot, columns, rect } = cell;
@@ -488,8 +502,91 @@ export async function getPhotoThumbnail(photo, maxEdge = 360) {
       if (value) resolve(value);
       else reject(new Error('照片缩略图生成失败。'));
     }, 'image/jpeg', 0.85));
+    throwIfAborted(options.signal);
     return { url: URL.createObjectURL(blob), owned: true };
   } finally {
     releaseCanvas(canvas);
+  }
+}
+
+function throwIfAborted(signal) {
+  if (signal?.aborted) throw new DOMException('照片缩略图请求已取消。', 'AbortError');
+}
+
+function queueThumbnail(task, signal) {
+  return new Promise((resolve, reject) => {
+    const request = { task, resolve, reject, signal, started: false };
+    request.onAbort = () => {
+      if (request.started) return; // createImageBitmap has no native abort API.
+      const index = thumbnailQueue.indexOf(request);
+      if (index !== -1) thumbnailQueue.splice(index, 1);
+      signal.removeEventListener('abort', request.onAbort);
+      reject(new DOMException('照片缩略图请求已取消。', 'AbortError'));
+    };
+    signal?.addEventListener('abort', request.onAbort, { once: true });
+    thumbnailQueue.push(request);
+    // Abort may occur between the public precheck and listener registration.
+    if (signal?.aborted) request.onAbort();
+    pumpThumbnailQueue();
+  });
+}
+
+function pumpThumbnailQueue() {
+  if (thumbnailDecodeActive || !thumbnailQueue.length) return;
+  const request = thumbnailQueue.shift();
+  request.started = true;
+  thumbnailDecodeActive = true;
+  Promise.resolve().then(request.task).then(request.resolve, request.reject).finally(() => {
+    request.signal?.removeEventListener('abort', request.onAbort);
+    thumbnailDecodeActive = false;
+    pumpThumbnailQueue();
+  });
+}
+
+async function createQualityThumbnail(photo, edge, signal) {
+  throwIfAborted(signal);
+  const blob = localFiles.get(photo);
+  if (!blob) throw new DOMException('照片相册已关闭。', 'AbortError');
+  const dimensions = photo.width > 0 && photo.height > 0 ? photo : await readImageDimensions(blob);
+  if (!dimensions || dimensions.width <= 0 || dimensions.height <= 0
+    || dimensions.width > MAX_IMAGE_EDGE || dimensions.height > MAX_IMAGE_EDGE
+    || dimensions.width * dimensions.height > MAX_IMAGE_PIXELS) {
+    throw new Error('照片尺寸无效或超出解码预算。');
+  }
+  throwIfAborted(signal);
+  if (!localFiles.has(photo)) throw new DOMException('照片相册已关闭。', 'AbortError');
+  const scale = Math.min(1, edge / Math.max(dimensions.width, dimensions.height));
+  let bitmap;
+  let canvas;
+  try {
+    bitmap = await createImageBitmap(blob, {
+      resizeWidth: Math.max(1, Math.round(dimensions.width * scale)),
+      resizeHeight: Math.max(1, Math.round(dimensions.height * scale)),
+      resizeQuality: 'high',
+      imageOrientation: 'from-image',
+    });
+    throwIfAborted(signal);
+    if (!localFiles.has(photo)) throw new DOMException('照片相册已关闭。', 'AbortError');
+    canvas = document.createElement('canvas');
+    canvas.width = bitmap.width;
+    canvas.height = bitmap.height;
+    const context = canvas.getContext('2d', { alpha: false });
+    if (!context) throw new Error('浏览器无法创建照片缩略图。');
+    context.drawImage(bitmap, 0, 0);
+    bitmap.close();
+    bitmap = null;
+    const thumbnail = await new Promise((resolve, reject) => canvas.toBlob(value => {
+      if (value) resolve(value);
+      else reject(new Error('照片缩略图生成失败。'));
+    }, 'image/jpeg', 0.9));
+    throwIfAborted(signal);
+    if (!localFiles.has(photo)) throw new DOMException('照片相册已关闭。', 'AbortError');
+    return { url: URL.createObjectURL(thumbnail), owned: true };
+  } catch (error) {
+    throwIfAborted(signal);
+    throw error;
+  } finally {
+    bitmap?.close();
+    if (canvas) releaseCanvas(canvas);
   }
 }

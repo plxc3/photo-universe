@@ -48,7 +48,10 @@
       </dialog>
       <dialog id="photo-dialog" aria-label="照片放大查看">
         <button class="dialog-close icon-button" aria-label="关闭照片"><i data-lucide="x" aria-hidden="true"></i></button>
-        <img id="photo-preview" alt="" />
+        <div id="photo-stage" class="photo-stage" aria-busy="false">
+          <img id="photo-preview" alt="" hidden />
+          <div id="photo-feedback" class="photo-feedback" role="status" hidden><span class="loader-orbit" aria-hidden="true"></span><span id="photo-status">正在打开照片</span><button id="photo-retry" class="button" hidden>重新打开照片</button></div>
+        </div>
         <div class="photo-caption"><span id="photo-title"></span><span id="photo-number"></span></div>
         <div class="photo-navigation"><button class="icon-button" id="previous-photo" aria-label="上一张照片"><i data-lucide="arrow-left" aria-hidden="true"></i></button><button class="icon-button" id="next-photo" aria-label="下一张照片"><i data-lucide="arrow-right" aria-hidden="true"></i></button></div>
       </dialog>
@@ -67,7 +70,7 @@
         <button id="demo" class="button">恢复精选相册</button>
         <div class="help-links"><a href="/editorial/SOURCES.md" target="_blank" rel="noreferrer">摄影来源</a><a href="https://www.douyin.com/video/7692616221573117321" target="_blank" rel="noreferrer">参考作品<i data-lucide="arrow-up-right" aria-hidden="true"></i></a></div>
       </dialog>
-      <aside id="inspection-panel" hidden aria-label="动效验收"><div class="inspection-actions"><button id="sample-performance">采样 30 秒</button><button id="stop-performance">结束采样</button></div><output id="performance-output">等待采样</output></aside>
+      <aside id="inspection-panel" hidden aria-label="动效验收"><div class="inspection-actions"><button id="sample-performance">采样 30 秒</button><button id="stop-performance">结束采样</button><button data-inspect-seek="8">镜头 8 秒</button><button data-inspect-seek="14">镜头 14 秒</button><button data-inspect-seek="25">镜头 25 秒</button></div><output id="performance-output">等待采样</output></aside>
       <noscript><div class="no-script">需要启用 JavaScript 才能打开照片空间。<a href="/editorial/coast-analogue.jpg">查看摄影</a></div></noscript>
     </main>
     <script type="module" src="/src/main.js"></script>
