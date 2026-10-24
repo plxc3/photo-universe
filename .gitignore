@@ -1,3 +1,5 @@
 node_modules/
 *.webm
 *.mp4
+
+.taste-skill/

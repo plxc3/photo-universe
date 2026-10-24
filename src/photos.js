@@ -9,11 +9,11 @@ const MAX_IMAGE_PIXELS = 100_000_000;
 const MAX_IMAGE_EDGE = 32768;
 const ATLAS_COLUMNS = 16;
 const ATLAS_CAPACITY = 256;
-const CELL_SIZE = 128;
-const CELL_RECT = Object.freeze({ x: 2, y: 22, width: 124, height: 84, size: CELL_SIZE });
-const DECODE_CONCURRENCY = 4;
+const MIB = 1024 * 1024;
+const CELL_SIZES = [192, 128, 96, 64, 48, 32, 16];
 const HEADER_BYTES = 512 * 1024;
 const localFiles = new WeakMap();
+const atlasCells = new WeakMap();
 let importSequence = 0;
 
 const yieldToBrowser = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -24,24 +24,44 @@ function reportProgress(callback, loaded, total) {
 
 function demoBaseUrl() {
   const base = import.meta.env?.BASE_URL || '/';
-  return new URL('photos/', new URL(base, globalThis.location?.href || import.meta.url));
+  return new URL('editorial/', new URL(base, globalThis.location?.href || import.meta.url));
 }
 
 /** Returns demo metadata; images are read once when preparing the atlases. */
 export async function loadDemoPhotos(onProgress) {
-  reportProgress(onProgress, 0, 48);
   const base = demoBaseUrl();
   const response = await fetch(new URL('manifest.json', base));
   if (!response.ok) throw new Error('无法读取演示相册，请确认照片资源已安装。');
   const manifest = await response.json();
-  const photos = manifest.slice(0, MAX_PHOTOS).map((entry, index) => ({
-    id: entry.id || `demo-${index + 1}`,
-    name: entry.name || `Photo ${index + 1}`,
-    url: new URL(entry.file, base).href,
-    width: entry.width,
-    height: entry.height,
-    source: 'demo',
-  }));
+  if (!Array.isArray(manifest)) throw new Error('演示相册清单格式无效。');
+  const entries = manifest.slice(0, MAX_PHOTOS);
+  reportProgress(onProgress, 0, entries.length);
+  const photos = entries.map((entry, index) => {
+    const url = new URL(entry.file, base);
+    // Demo assets are bundled locally. Credit links are metadata, never fetches.
+    if (url.origin !== base.origin || !url.pathname.startsWith(base.pathname)) {
+      throw new Error('演示照片必须来自本地演示相册。');
+    }
+    const thumbnail = entry.thumbnailFile ? new URL(entry.thumbnailFile, base) : url;
+    if (thumbnail.origin !== base.origin || !thumbnail.pathname.startsWith(base.pathname)) {
+      throw new Error('演示缩略图必须来自本地演示相册。');
+    }
+    return {
+      id: entry.id || `demo-${index + 1}`,
+      name: entry.name || `Photo ${index + 1}`,
+      url: url.href,
+      thumbnailUrl: thumbnail.href,
+      width: entry.width,
+      height: entry.height,
+      source: 'demo',
+      author: entry.author,
+      authorHandle: entry.authorHandle,
+      sourceUrl: entry.sourceUrl,
+      category: entry.category,
+      license: entry.license,
+      licenseUrl: entry.licenseUrl,
+    };
+  });
   reportProgress(onProgress, photos.length, photos.length);
   return { photos, skipped: 0 };
 }
@@ -96,6 +116,7 @@ export async function loadLocalPhotos(files, onProgress) {
 /** Call only when a replaced album is no longer displayed. Safe to repeat. */
 export function releasePhotos(photos) {
   for (const photo of photos || []) {
+    atlasCells.delete(photo);
     if (photo.source === 'local' && photo.url?.startsWith('blob:')) {
       URL.revokeObjectURL(photo.url);
       localFiles.delete(photo);
@@ -220,10 +241,71 @@ async function readImageDimensions(blob) {
   return null;
 }
 
-async function decodeThumbnail(photo) {
+function positiveOption(value, fallback, name) {
+  if (value === undefined) return fallback;
+  if (!Number.isFinite(value) || value <= 0) throw new RangeError(`${name} 必须是正数。`);
+  return value;
+}
+
+function plannedCanvasBytes(count, cellSize) {
+  // Capacity is a multiple of columns, so summing each atlas's rounded rows
+  // gives the same result as rounding the full candidate count once.
+  return Math.ceil(count / ATLAS_COLUMNS) * ATLAS_COLUMNS * cellSize * cellSize * 4;
+}
+
+function atlasBudget(count, options) {
+  const mobile = options.mobile ?? Boolean(globalThis.matchMedia?.('(pointer: coarse)').matches);
+  const memory = options.deviceMemoryGB ?? globalThis.navigator?.deviceMemory;
+  const lowMemory = Number.isFinite(memory) && memory <= 2;
+  const maxTextureSize = Math.floor(positiveOption(options.maxTextureSize, 2048, 'maxTextureSize'));
+  const maxAtlasBytes = positiveOption(options.maxAtlasBytes, (lowMemory ? 32 : mobile ? 48 : 64) * MIB, 'maxAtlasBytes');
+  const preferred = count > ATLAS_CAPACITY ? (lowMemory ? 48 : 64)
+    : count <= 32 && !mobile && maxTextureSize >= 3072 ? 192 : 128;
+  const desired = positiveOption(options.cellSize, preferred, 'cellSize');
+  const cellSize = CELL_SIZES.find(size => size <= desired && size * ATLAS_COLUMNS <= maxTextureSize
+    && plannedCanvasBytes(count, size) <= maxAtlasBytes);
+  if (!cellSize) throw new RangeError('照片数量超过当前纹理预算，请提高预算或减少照片。');
+  const gutter = Math.max(1, Math.round(cellSize / 64));
+  const width = cellSize - gutter * 2;
+  const height = Math.max(1, Math.round(width / 1.5));
+  const cellRect = Object.freeze({ x: gutter, y: Math.floor((cellSize - height) / 2), width, height, size: cellSize });
+  const decodeConcurrency = Math.max(1, Math.min(4, Math.floor(positiveOption(options.decodeConcurrency,
+    lowMemory ? 1 : mobile ? 2 : 3, 'decodeConcurrency'))));
+  const decodePixelBudget = positiveOption(options.decodePixelBudget, (mobile || lowMemory ? 16 : 32) * 1_000_000, 'decodePixelBudget');
+  let pixelsInFlight = 0;
+  let activeDecodes = 0;
+  const waiting = [];
+  const budget = {
+    cellSize, cellRect, columns: ATLAS_COLUMNS, maxTextureSize, maxAtlasBytes,
+    decodeConcurrency, decodePixelBudget, maximumConcurrentDecodes: 0, maximumDecodePixels: 0,
+    async acquireDecode(pixels) {
+      await new Promise(resolve => { waiting.push({ pixels, resolve }); pump(); });
+      return () => { pixelsInFlight -= pixels; activeDecodes -= 1; pump(); };
+    },
+  };
+  function pump() {
+    while (waiting.length && activeDecodes < decodeConcurrency) {
+      const next = waiting[0];
+      // A single accepted image may exceed this estimate. Run it alone instead
+      // of leaving the queue permanently blocked; the 100MP guard still applies.
+      if (activeDecodes && pixelsInFlight + next.pixels > decodePixelBudget) break;
+      waiting.shift();
+      pixelsInFlight += next.pixels;
+      activeDecodes += 1;
+      budget.maximumConcurrentDecodes = Math.max(budget.maximumConcurrentDecodes, activeDecodes);
+      budget.maximumDecodePixels = Math.max(budget.maximumDecodePixels, pixelsInFlight);
+      next.resolve();
+    }
+  }
+  return budget;
+}
+
+async function decodeThumbnail(photo, budget) {
   let blob = localFiles.get(photo);
   if (!blob) {
-    const response = await fetch(photo.url);
+    // The bundled 440px version already exceeds the atlas resolution. Keep
+    // full photographs for the lightbox instead of downloading all of them.
+    const response = await fetch(photo.source === 'demo' ? photo.thumbnailUrl || photo.url : photo.url);
     if (!response.ok) throw new Error('照片资源读取失败');
     blob = await response.blob();
   }
@@ -237,109 +319,177 @@ async function decodeThumbnail(photo) {
   if (width > MAX_IMAGE_EDGE || height > MAX_IMAGE_EDGE || width * height > MAX_IMAGE_PIXELS) {
     throw new Error('图片超过 1 亿像素或 32768 px 边长');
   }
-  const scale = Math.min(1, (CELL_SIZE * 2) / Math.max(width, height));
-  const bitmap = await createImageBitmap(blob, {
-    resizeWidth: Math.max(1, Math.round(width * scale)),
-    resizeHeight: Math.max(1, Math.round(height * scale)),
-    resizeQuality: 'medium',
-    imageOrientation: 'from-image',
-  });
-  photo.width = width;
-  photo.height = height;
+  const scale = Math.min(1, (budget.cellSize * 2) / Math.max(width, height));
+  const releaseDecode = await budget.acquireDecode(width * height);
+  let bitmap;
+  try {
+    bitmap = await createImageBitmap(blob, {
+      resizeWidth: Math.max(1, Math.round(width * scale)),
+      resizeHeight: Math.max(1, Math.round(height * scale)),
+      resizeQuality: 'medium',
+      imageOrientation: 'from-image',
+    });
+  } finally {
+    // The resized bitmap is small; the native full-image decode is now finished.
+    releaseDecode();
+  }
+  if (photo.source !== 'demo' || !photo.width || !photo.height) {
+    photo.width = width;
+    photo.height = height;
+  }
   return bitmap;
 }
 
-function createAtlasCanvas(photoCount) {
-  const canvas = document.createElement('canvas');
-  canvas.width = ATLAS_COLUMNS * CELL_SIZE;
-  canvas.height = Math.ceil(photoCount / ATLAS_COLUMNS) * CELL_SIZE;
-  return canvas;
+function releaseCanvas(canvas) {
+  canvas.width = 0;
+  canvas.height = 0;
 }
 
-function drawCover(context, bitmap, slot) {
-  const x = (slot % ATLAS_COLUMNS) * CELL_SIZE;
-  const y = Math.floor(slot / ATLAS_COLUMNS) * CELL_SIZE;
-  const targetAspect = CELL_RECT.width / CELL_RECT.height;
+function drawCover(context, bitmap, slot, budget) {
+  const { cellSize, cellRect, columns } = budget;
+  const x = (slot % columns) * cellSize;
+  const y = Math.floor(slot / columns) * cellSize;
+  const targetAspect = cellRect.width / cellRect.height;
   const sourceAspect = bitmap.width / bitmap.height;
   const sourceWidth = sourceAspect > targetAspect ? bitmap.height * targetAspect : bitmap.width;
   const sourceHeight = sourceAspect > targetAspect ? bitmap.height : bitmap.width / targetAspect;
   context.fillStyle = '#05070c';
-  context.fillRect(x, y, CELL_SIZE, CELL_SIZE);
+  context.fillRect(x, y, cellSize, cellSize);
   context.drawImage(bitmap, (bitmap.width - sourceWidth) / 2, (bitmap.height - sourceHeight) / 2,
-    sourceWidth, sourceHeight, x + CELL_RECT.x, y + CELL_RECT.y, CELL_RECT.width, CELL_RECT.height);
+    sourceWidth, sourceHeight, x + cellRect.x, y + cellRect.y, cellRect.width, cellRect.height);
 }
 
 /**
- * Returns [{ canvas, photoIndices, cellRect }]. Cell i maps to photos[photoIndices[i]].
- * cellRect describes the rectangular photo area within a 128 px cell; use it
+ * Returns [{ canvas, photoIndices, cellRect, columns }]. Cell i maps to photos[photoIndices[i]].
+ * cellRect describes the rectangular photo area within the budgeted cell; use it
  * when computing texture UVs so landscape cards preserve their proportions.
  * Corrupt files are excluded, preserving deterministic input ordering.
- * A non-enumerable diagnostics property exposes real successful-photo counts.
+ * Options (all optional): maxTextureSize (renderer.capabilities.maxTextureSize;
+ * conservative default 2048), maxAtlasBytes (CPU atlas budget), cellSize (upper
+ * bound), mobile, deviceMemoryGB, decodeConcurrency (1–4), decodePixelBudget.
+ * A non-enumerable diagnostics property exposes counts and actual canvas bytes.
+ * A native decode larger than decodePixelBudget runs alone. Successful canvases
+ * belong to the renderer; every canvas is released if the build throws.
  */
-export async function buildPhotoAtlases(photos, onProgress) {
+export async function buildPhotoAtlases(photos, onProgress, options = {}) {
+  const budget = atlasBudget(photos.length, options);
   const atlases = [];
   const skipped = [];
+  const createdCanvases = new Set();
+  let peakCanvasBytes = 0;
   let loaded = 0;
   let decodedCount = 0;
-  reportProgress(onProgress, 0, photos.length);
-
-  for (let start = 0; start < photos.length; start += ATLAS_CAPACITY) {
-    const end = Math.min(start + ATLAS_CAPACITY, photos.length);
-    let canvas = createAtlasCanvas(end - start);
-    const context = canvas.getContext('2d', { alpha: false });
-    if (!context) throw new Error('浏览器无法创建照片图册。');
-    const photoIndices = [];
-
-    for (let offset = start; offset < end; offset += DECODE_CONCURRENCY) {
-      const batchEnd = Math.min(offset + DECODE_CONCURRENCY, end);
-      const batchIndices = Array.from({ length: batchEnd - offset }, (_, index) => offset + index);
-      const results = await Promise.allSettled(batchIndices.map((index) => decodeThumbnail(photos[index])));
-
-      for (let index = 0; index < results.length; index += 1) {
-        const result = results[index];
-        const photoIndex = batchIndices[index];
-        if (result.status === 'fulfilled') {
-          try {
-            drawCover(context, result.value, photoIndices.length);
-            photoIndices.push(photoIndex);
-            decodedCount += 1;
-          } catch (error) {
-            const photo = photos[photoIndex];
-            skipped.push({ id: photo.id, name: photo.name, reason: error?.message || '图片绘制失败' });
-          } finally {
-            result.value.close();
-          }
-        } else {
-          const photo = photos[photoIndex];
-          skipped.push({ id: photo.id, name: photo.name, reason: result.reason?.message || '图片解码失败' });
-        }
-        loaded += 1;
-      }
-      reportProgress(onProgress, loaded, photos.length);
-      await yieldToBrowser();
-    }
-
-    if (!photoIndices.length) {
-      canvas.width = 0;
-      canvas.height = 0;
-      continue;
-    }
-    const requiredHeight = Math.ceil(photoIndices.length / ATLAS_COLUMNS) * CELL_SIZE;
-    if (canvas.height !== requiredHeight) {
-      const trimmed = createAtlasCanvas(photoIndices.length);
-      const trimmedContext = trimmed.getContext('2d', { alpha: false });
-      if (!trimmedContext) throw new Error('浏览器无法创建照片图册。');
-      trimmedContext.drawImage(canvas, 0, 0);
-      canvas.width = 0;
-      canvas.height = 0;
-      canvas = trimmed;
-    }
-    atlases.push({ canvas, photoIndices, cellRect: CELL_RECT });
+  const canvasBytes = () => [...createdCanvases].reduce((sum, canvas) => sum + canvas.width * canvas.height * 4, 0);
+  function createCanvas(count) {
+    const canvas = document.createElement('canvas');
+    createdCanvases.add(canvas); // Register before sizing or obtaining a context.
+    canvas.width = budget.columns * budget.cellSize;
+    canvas.height = Math.ceil(count / budget.columns) * budget.cellSize;
+    peakCanvasBytes = Math.max(peakCanvasBytes, canvasBytes());
+    return canvas;
   }
+  try {
+    reportProgress(onProgress, 0, photos.length);
+    for (let start = 0; start < photos.length; start += ATLAS_CAPACITY) {
+      const end = Math.min(start + ATLAS_CAPACITY, photos.length);
+      let canvas = createCanvas(end - start);
+      const context = canvas.getContext('2d', { alpha: false });
+      if (!context) throw new Error('浏览器无法创建照片图册。');
+      const photoIndices = [];
 
-  Object.defineProperty(atlases, 'diagnostics', {
-    value: { inputCount: photos.length, decodedCount, skippedCount: skipped.length, skipped },
-    enumerable: false,
-  });
-  return atlases;
+      for (let offset = start; offset < end; offset += budget.decodeConcurrency) {
+        const batchEnd = Math.min(offset + budget.decodeConcurrency, end);
+        const batchIndices = Array.from({ length: batchEnd - offset }, (_, index) => offset + index);
+        const results = await Promise.allSettled(batchIndices.map(index => decodeThumbnail(photos[index], budget)));
+        try {
+          for (let index = 0; index < results.length; index += 1) {
+            const result = results[index];
+            const photoIndex = batchIndices[index];
+            const photo = photos[photoIndex];
+            if (result.status === 'fulfilled') {
+              try {
+                drawCover(context, result.value, photoIndices.length, budget);
+                photoIndices.push(photoIndex);
+                decodedCount += 1;
+              } catch (error) {
+                skipped.push({ id: photo.id, name: photo.name, reason: error?.message || '图片绘制失败' });
+              }
+            } else {
+              skipped.push({ id: photo.id, name: photo.name, reason: result.reason?.message || '图片解码失败' });
+            }
+            loaded += 1;
+          }
+          reportProgress(onProgress, loaded, photos.length);
+        } finally {
+          for (const result of results) if (result.status === 'fulfilled') result.value.close();
+        }
+        await yieldToBrowser();
+      }
+
+      if (!photoIndices.length) { releaseCanvas(canvas); continue; }
+      const requiredHeight = Math.ceil(photoIndices.length / budget.columns) * budget.cellSize;
+      if (canvas.height !== requiredHeight) {
+        const trimmed = createCanvas(photoIndices.length);
+        const trimmedContext = trimmed.getContext('2d', { alpha: false });
+        if (!trimmedContext) throw new Error('浏览器无法创建照片图册。');
+        trimmedContext.drawImage(canvas, 0, 0);
+        releaseCanvas(canvas);
+        canvas = trimmed;
+      }
+      atlases.push({ canvas, photoIndices, cellRect: budget.cellRect, columns: budget.columns });
+    }
+    // Publish thumbnail references only after the complete build succeeds.
+    for (const atlas of atlases) {
+      atlas.photoIndices.forEach((photoIndex, slot) => {
+        atlasCells.set(photos[photoIndex], { canvas: atlas.canvas, slot, columns: atlas.columns, rect: atlas.cellRect });
+      });
+    }
+    const bytes = canvasBytes();
+    Object.defineProperty(atlases, 'diagnostics', {
+      value: {
+        inputCount: photos.length, decodedCount, skippedCount: skipped.length, skipped,
+        cellSize: budget.cellSize, columns: budget.columns, maxTextureSize: budget.maxTextureSize,
+        maxAtlasBytes: budget.maxAtlasBytes, canvasBytes: bytes, peakCanvasBytes,
+        estimatedTextureBytes: Math.ceil(bytes * 4 / 3),
+        decodeConcurrency: budget.decodeConcurrency, decodePixelBudget: budget.decodePixelBudget,
+        maximumConcurrentDecodes: budget.maximumConcurrentDecodes, maximumDecodePixels: budget.maximumDecodePixels,
+      },
+      enumerable: false,
+    });
+    return atlases;
+  } catch (error) {
+    for (const canvas of createdCanvases) releaseCanvas(canvas);
+    throw error;
+  }
+}
+
+/**
+ * Local albums reuse the existing atlas: no second full-image decode. The caller
+ * owns a returned blob: URL and must revoke it when its gallery page closes.
+ * Demo images use their bundled thumbnail URL. Before/after atlas availability,
+ * fall back to the existing image URL (which this function does not own).
+ */
+export async function getPhotoThumbnail(photo, maxEdge = 360) {
+  if (photo.source === 'demo') return { url: photo.thumbnailUrl || photo.url, owned: false };
+  const cell = atlasCells.get(photo);
+  if (!cell?.canvas.width || !cell.canvas.height) return { url: photo.thumbnailUrl || photo.url, owned: false };
+  const { canvas: source, slot, columns, rect } = cell;
+  const edge = positiveOption(maxEdge, 360, 'maxEdge');
+  const scale = Math.min(1, edge / Math.max(rect.width, rect.height));
+  const canvas = document.createElement('canvas');
+  try {
+    canvas.width = Math.max(1, Math.round(rect.width * scale));
+    canvas.height = Math.max(1, Math.round(rect.height * scale));
+    const context = canvas.getContext('2d', { alpha: false });
+    if (!context) throw new Error('浏览器无法创建照片缩略图。');
+    context.drawImage(source, slot % columns * rect.size + rect.x, Math.floor(slot / columns) * rect.size + rect.y,
+      rect.width, rect.height, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise((resolve, reject) => canvas.toBlob(value => {
+      if (value) resolve(value);
+      else reject(new Error('照片缩略图生成失败。'));
+    }, 'image/jpeg', 0.85));
+    return { url: URL.createObjectURL(blob), owned: true };
+  } finally {
+    releaseCanvas(canvas);
+  }
 }

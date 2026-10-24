@@ -1,185 +1,124 @@
-// Cinematic flight path sampler for the photo-universe intro.
-// Pure function: maps a time in seconds to a camera rig sample.
-
-const TOTAL = 30;
-const PHASE1 = 5.5;
-const PHASE2_END = 24;
-export const FILM = { total: TOTAL, phase1: PHASE1, phase2End: PHASE2_END };
-
-const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+// One camera rig for the resting sculpture and its thirty-second film.
+export const FILM = { total: 29.65, phase1: 5.5, phase2End: 21.8 };
+export const ORBIT_CONTENT_RADIUS = 25;
+export const REST_ROTATION = [-0.08, -0.68, -0.15];
+export const PORTRAIT_ROTATION = [-1.05, 0.22, 2.20];
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const lerp = (a, b, s) => a + (b - a) * s;
-const DEG2RAD = Math.PI / 180;
+const mix = (a, b, s) => a.map((v, i) => lerp(v, b[i], s));
 
-// Smootherstep: C2 continuous, zero velocity at both ends -> no speed jumps.
-const smoother = (x) => {
-  const t = clamp(x, 0, 1);
+export function easeInOut(value) {
+  const t = clamp(value, 0, 1);
   return t * t * t * (t * (t * 6 - 15) + 10);
-};
-// Envelope that is 0 at u=0 and u=1, smooth in between.
-const env = (u) => {
-  const s = Math.sin(Math.PI * u);
-  return s * s;
-};
+}
+const envelope = u => Math.sin(Math.PI * u) ** 2;
 
-// Bounding radius (world units) of the "orbit" formation, sculpture + outer ring.
-// Chosen so the horizontal fit keeps the full card layout inside the edges.
-export const ORBIT_CONTENT_RADIUS = 24;
+export function portraitAmount(aspect = 16 / 9) {
+  const a = Number.isFinite(aspect) && aspect > 0 ? aspect : 16 / 9;
+  return easeInOut((1.25 - a) / 0.55);
+}
 
-// Desktop establishing-shot anchor: camera position, its distance, and side offset.
-const DESKTOP_END = [34, 14, 50];
-const DESKTOP_END_DISTANCE = Math.hypot(...DESKTOP_END); // ~61.5
-const DESKTOP_H_OFFSET = -0.065; // negative x pushes the scene right (the look to keep)
+export function restRotation(aspect = 16 / 9) {
+  return mix(REST_ROTATION, PORTRAIT_ROTATION, portraitAmount(aspect));
+}
 
-/**
- * Shared aspect-driven framing used by the resting orbit view, the reset button
- * and both ends of the film, so they never disagree about how far the phone sits.
- * On portrait we fit the formation to horizontal FOV (never a hardcoded 390) so it
- * stays inside the edges with margin, then push a negative vertical view offset to
- * drop the scene below the top title. Desktop keeps its existing side-offset look.
- */
+// Fit a sphere inside both horizontal and vertical safe areas. Unlike a phone
+// breakpoint this remains continuous when a viewport changes orientation.
 export function orbitFraming(aspect = 16 / 9, fov = 54) {
-  const validAspect = Number.isFinite(aspect) && aspect > 0;
-  const mobile = validAspect && aspect < 0.8;
-  const a = validAspect ? aspect : 16 / 9;
-  const tanHalf = Math.tan((fov * DEG2RAD) / 2);
-  if (!mobile) {
-    return {
-      mobile: false,
-      distance: DESKTOP_END_DISTANCE,
-      fov,
-      verticalOffsetFraction: 0, // desktop keeps its current composition
-      horizontalOffsetFraction: DESKTOP_H_OFFSET,
-      marginRatio: clamp(
-        (1 - ORBIT_CONTENT_RADIUS / (DESKTOP_END_DISTANCE * a * tanHalf)) / 2,
-        0,
-        1,
-      ),
-    };
-  }
-  const halfHorizontal = a * tanHalf;
-  // Horizontal fraction of the viewport the content may occupy -> ~>=20% margin total.
-  const occupancy = 0.8;
-  let distance = ORBIT_CONTENT_RADIUS / (occupancy * halfHorizontal);
-  // Never so far the cards turn into dots; clamp to a sane range.
-  distance = clamp(distance, 72, 150);
-  // Negative vertical offset moves the scene down (avoids overlapping the title).
-  const verticalOffsetFraction = -0.085;
+  const a = Number.isFinite(aspect) && aspect > 0 ? aspect : 16 / 9;
+  const angle = (Number.isFinite(fov) && fov > 0 && fov < 150 ? fov : 54) * Math.PI / 360;
+  const horizontal = Math.atan(a * Math.tan(angle) * 0.90);
+  const vertical = Math.atan(Math.tan(angle) * 0.80);
+  const portrait = portraitAmount(a);
+  // A vertical sculpture uses its narrow side on phones. Fit that side more
+  // closely while reserving a vertical floor for shorter portrait/tablet views.
+  const distance = Math.max(
+    ORBIT_CONTENT_RADIUS / Math.sin(horizontal) * lerp(1, 0.868, portrait),
+    ORBIT_CONTENT_RADIUS / Math.sin(vertical) * lerp(1, 1.45, portrait),
+  );
   return {
-    mobile: true,
+    mobile: a < 0.85,
     distance,
     fov,
-    verticalOffsetFraction,
     horizontalOffsetFraction: 0,
-    marginRatio: clamp(
-      (1 - ORBIT_CONTENT_RADIUS / (distance * halfHorizontal)) / 2,
-      0,
-      1,
-    ),
+    verticalOffsetFraction: lerp(0.025, 0.01209, portrait),
+    marginRatio: 0.05,
   };
 }
 
-// Resting view-offset fractions for the current viewport. Desktop keeps the
-// side offset only when there is room (wideEnough); portrait pushes the scene
-// down. These are the same fractions the film must ease back to so a natural
-// end is projection-matrix identical to a resize at rest.
-export function restingViewFractions(aspect, wideEnough = true) {
-  const framing = orbitFraming(aspect, 54);
-  const x = framing.mobile || !wideEnough ? 0 : framing.horizontalOffsetFraction;
-  const y = framing.mobile ? framing.verticalOffsetFraction : 0;
-  return { x, y };
+export function orbitPosition(aspect = 16 / 9, fov = 54) {
+  const { distance } = orbitFraming(aspect, fov);
+  const x = distance * 0.13;
+  const y = distance * 0.085;
+  return [x, y, Math.sqrt(distance * distance - x * x - y * y)];
 }
 
-/**
- * Continuous view-offset schedule for the cinematic flight, in the SAME
- * fractions as the resting framing. Starts at rest, eases to 0 through the
- * tunnel, and converges exactly back to rest by the 30s mark so the natural
- * handoff to interactive mode causes no projection jump.
- */
-export function flightViewOffset(t, restingX = 0, restingY = 0) {
-  const time = Number.isFinite(t) ? clamp(t, 0, TOTAL) : 0;
-  if (time < PHASE1) {
-    const k = 1 - smoother(time / PHASE1);
-    return { x: restingX * k, y: restingY * k };
+export function restingViewFractions(aspect) {
+  const framing = orbitFraming(aspect);
+  return { x: 0, y: framing.verticalOffsetFraction };
+}
+
+export function flightViewOffset(seconds, restingX = 0, restingY = 0, start = null) {
+  const t = Number.isFinite(seconds) ? clamp(seconds, 0, FILM.total) : 0;
+  if (t < FILM.phase1) {
+    const k = 1 - easeInOut(t / FILM.phase1);
+    return { x: (start?.x ?? restingX) * k, y: (start?.y ?? restingY) * k };
   }
-  if (time < PHASE2_END) return { x: 0, y: 0 };
-  const s = smoother((time - PHASE2_END) / (TOTAL - PHASE2_END));
+  if (t < FILM.phase2End) return { x: 0, y: 0 };
+  const s = easeInOut((t - FILM.phase2End) / (FILM.total - FILM.phase2End));
   return { x: restingX * s, y: restingY * s };
 }
 
-// Establishing-shot camera position. Desktop keeps the fixed side composition;
-// portrait keeps a gentle lateral offset but pushes z back so |position| == the
-// aspect-driven framing distance (matches the resting orbit view exactly).
-function framingPosition(framing) {
-  if (!framing.mobile) return [...DESKTOP_END];
-  const d = framing.distance;
-  const x = 6;
-  const y = DESKTOP_END[1];
-  const z = Math.sqrt(Math.max(1, d * d - x * x - y * y));
-  return [x, y, z];
-}
-
-export function sampleFlight(seconds, aspect = 16 / 9) {
-  const t = Number.isFinite(seconds) ? clamp(seconds, 0, TOTAL) : 0;
-  const framing = orbitFraming(aspect, 54);
-  // Mobile starts further out (aspect-driven), desktop uses the cinematic 90.
-  const startRadius = framing.mobile ? Math.max(90, framing.distance * 1.08) : 90;
-  const end = framingPosition(framing);
-
-  // Phase 1 (0 - 5.5s): orbit from outside, closing in.
-  if (t < PHASE1) {
-    const s = smoother(t / PHASE1);
-    const radius = lerp(startRadius, 38, s);
-    const yaw = 0.35 * (1 - s);
-    const y = 8 * (1 - s);
+export function sampleFlight(seconds, aspect = 16 / 9, startPose = null) {
+  const t = Number.isFinite(seconds) ? clamp(seconds, 0, FILM.total) : 0;
+  const end = orbitPosition(aspect);
+  const restingRotation = restRotation(aspect);
+  if (t < FILM.phase1) {
+    const s = easeInOut(t / FILM.phase1);
+    const start = startPose || { position: end, target: [0, 0, 0], up: [0, 1, 0], fov: 54, rotation: restingRotation };
+    const up = mix(start.up, [0, 1, 0], s);
+    const length = Math.hypot(...up) || 1;
+    const rotation = mix(start.rotation, [0, 0, 0], s);
+    rotation[2] += Math.sin(Math.PI * s) * 0.12;
     return {
       mode: 'orbit',
-      position: [radius * Math.sin(yaw), y, radius * Math.cos(yaw)],
-      target: [0, 0, 0],
-      up: [0, 1, 0],
-      fov: lerp(54, 75, s),
-      rotation: [0.15 * (1 - s), 0.1 * (1 - s), 0.05 * (1 - s)],
+      position: mix(start.position, [0, 0, 76], s),
+      target: mix(start.target, [0, 0, 0], s),
+      up: up.map(v => v / length),
+      fov: lerp(start.fov, 72, s),
+      rotation,
     };
   }
-
-  // Phase 2 (5.5s - 24s): fly through the square tunnel.
-  if (t < PHASE2_END) {
-    const u = (t - PHASE1) / (PHASE2_END - PHASE1);
-    const s = smoother(u);
-    const e = env(u);
-    const z = lerp(38, 14, s); // always positive -> never flips backward
-    const upX = e * 0.1 * Math.sin(4 * Math.PI * u);
-    const upZ = e * 0.08 * Math.cos(4 * Math.PI * u);
-    const upY = Math.sqrt(Math.max(0, 1 - upX * upX - upZ * upZ));
+  if (t < FILM.phase2End) {
+    const u = (t - FILM.phase1) / (FILM.phase2End - FILM.phase1);
+    const s = easeInOut(u);
+    const e = envelope(s);
+    const z = lerp(76, 2, s);
+    const x = e * 2.0 * Math.sin(2.6 * Math.PI * u);
+    const y = e * 1.4 * Math.cos(1.8 * Math.PI * u);
+    const roll = 0.55 * e;
     return {
       mode: 'tunnel',
-      position: [
-        e * 3.2 * Math.sin(3.5 * Math.PI * u + 0.4),
-        e * 2.6 * Math.cos(2.5 * Math.PI * u),
-        z,
-      ],
-      // target.z = position.z - 38 keeps [0,0,0] at 5.5s and [0,0,-24] at 24s.
-      target: [0, 0, z - 38],
-      up: [upX, upY, upZ],
-      fov: 75,
-      rotation: [0, 0, 0],
+      position: [x, y, z],
+      target: [x * 0.15, y * 0.15, z - 76],
+      up: [0, 1, 0],
+      fov: 72,
+      rotation: [0, 0, roll],
     };
   }
-
-  // Phase 3 (24s - 30s): pull back out to the establishing shot.
-  const u = (t - PHASE2_END) / (TOTAL - PHASE2_END);
-  const s = smoother(u);
-  const e = env(u);
-  const spiral = e * 2.2; // zero at both ends
+  const u = (t - FILM.phase2End) / (FILM.total - FILM.phase2End);
+  const settle = easeInOut(u);
+  const spiral = envelope(settle) * 0.85;
   return {
     mode: 'orbit',
     position: [
-      lerp(0, end[0], s) + spiral * Math.sin(2.5 * Math.PI * u),
-      lerp(0, end[1], s) + spiral * 0.5 * Math.sin(3 * Math.PI * u),
-      lerp(14, end[2], s) + spiral * Math.cos(2.5 * Math.PI * u),
+      lerp(0, end[0], settle) + spiral * Math.sin(2 * Math.PI * u),
+      lerp(0, end[1], settle) + spiral * 0.35 * Math.sin(3 * Math.PI * u),
+      lerp(2, end[2], settle) + spiral * Math.cos(2 * Math.PI * u),
     ],
-    target: [0, 0, lerp(-24, 0, s)],
+    target: [0, 0, lerp(-74, 0, settle)],
     up: [0, 1, 0],
-    fov: lerp(75, 54, s),
-    rotation: [0.08 * s, 0.05 * s, 0.03 * s],
+    fov: lerp(72, 54, settle),
+    rotation: settle === 0 ? [0, 0, 0] : restingRotation.map(value => value * settle),
   };
 }

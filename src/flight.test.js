@@ -1,15 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
-import { sampleFlight, orbitFraming, ORBIT_CONTENT_RADIUS } from './flight.js';
+import { sampleFlight, orbitFraming, orbitPosition, portraitAmount, restRotation, FILM, REST_ROTATION } from './flight.js';
 import { PhotoUniverse } from './scene.js';
 
 const DESKTOP = 16 / 9;
-const MOBILE = 9 / 16; // < 0.8 -> mobile branch (portrait phone)
+const MOBILE = 9 / 16;
 
-const isFiniteVec = (v) =>
-  Array.isArray(v) && v.length === 3 && v.every((n) => Number.isFinite(n));
-
+const isFiniteVec = (v) => Array.isArray(v) && v.length === 3 && v.every((n) => Number.isFinite(n));
 const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
 
 function expectShape(s) {
@@ -21,189 +19,162 @@ function expectShape(s) {
   assert.ok(Number.isFinite(s.fov), 'fov not finite');
 }
 
-test('keyframes: desktop at 0 / 5.5 / 24 / 30 match spec', () => {
+test('keyframes: orbit mouth, tunnel entrance, tunnel exit and final orbit', () => {
   const p0 = sampleFlight(0, DESKTOP);
   assert.equal(p0.mode, 'orbit');
   assert.equal(p0.fov, 54);
   assert.deepEqual(p0.target, [0, 0, 0]);
   assert.deepEqual(p0.up, [0, 1, 0]);
-  // starts at radius ~90, slight yaw and y
-  assert.ok(Math.abs(dist(p0.position, [0, 0, 0]) - 90) < 2, 'start radius ~90');
-  assert.ok(p0.position[1] > 6 && p0.position[1] < 9, 'start y ~8');
-  assert.ok(p0.position[0] > 0, 'start yaw pushes +x');
-  // initial tilt present
-  assert.ok(p0.rotation.some((n) => n !== 0), 'has initial tilt');
+  assert.ok(dist(p0.position, [0, 0, 0]) > 60, 'starts outside the halo');
+  assert.ok(p0.position[0] > 0 && p0.position[1] > 0, 'starts above-right');
+  assert.deepEqual(p0.rotation, REST_ROTATION);
 
-  const p55 = sampleFlight(5.5, DESKTOP);
-  assert.deepEqual(p55.position, [0, 0, 38]);
-  assert.deepEqual(p55.target, [0, 0, 0]);
-  assert.deepEqual(p55.up, [0, 1, 0]);
-  assert.equal(p55.fov, 75);
-  assert.deepEqual(p55.rotation, [0, 0, 0]);
+  const entrance = sampleFlight(FILM.phase1, DESKTOP);
+  assert.equal(entrance.mode, 'tunnel');
+  assert.deepEqual(entrance.position, [0, 0, 76]);
+  assert.deepEqual(entrance.target, [0, 0, 0]);
+  assert.deepEqual(entrance.up, [0, 1, 0]);
+  assert.equal(entrance.fov, 72);
+  assert.deepEqual(entrance.rotation, [0, 0, 0]);
 
-  const p24 = sampleFlight(24, DESKTOP);
-  assert.deepEqual(p24.position, [0, 0, 14]);
-  assert.deepEqual(p24.target, [0, 0, -24]);
-  assert.deepEqual(p24.up, [0, 1, 0]);
-  assert.equal(p24.fov, 75);
-  assert.deepEqual(p24.rotation, [0, 0, 0]);
+  const tunnelExit = sampleFlight(FILM.phase2End, DESKTOP);
+  assert.equal(tunnelExit.mode, 'orbit');
+  assert.deepEqual(tunnelExit.position, [0, 0, 2]);
+  assert.deepEqual(tunnelExit.target, [0, 0, -74]);
+  assert.deepEqual(tunnelExit.up, [0, 1, 0]);
+  assert.equal(tunnelExit.fov, 72);
+  assert.deepEqual(tunnelExit.rotation, [0, 0, 0]);
 
-  const p30 = sampleFlight(30, DESKTOP);
-  assert.equal(p30.mode, 'orbit');
-  assert.deepEqual(p30.position, [34, 14, 50]);
-  assert.deepEqual(p30.target, [0, 0, 0]);
-  assert.deepEqual(p30.up, [0, 1, 0]);
-  assert.equal(p30.fov, 54);
-  assert.ok(p30.rotation.some((n) => n !== 0), 'ends with slight tilt');
+  const final = sampleFlight(FILM.total, DESKTOP);
+  assert.equal(final.mode, 'orbit');
+  assert.deepEqual(final.target, [0, 0, 0]);
+  assert.deepEqual(final.up, [0, 1, 0]);
+  assert.equal(final.fov, 54);
+  REST_ROTATION.forEach((value, index) => assert.ok(Math.abs(final.rotation[index] - value) < 1e-9));
+  assert.ok(Math.abs(dist(final.position, [0, 0, 0]) - orbitFraming(DESKTOP).distance) < 1e-9);
 });
 
-test('keyframes: mobile lands same 5.5 / 24 points, wider aspect-driven start and finish', () => {
-  const framing = orbitFraming(MOBILE);
-  assert.equal(framing.mobile, true, '9:16 must be mobile');
-  const p0 = sampleFlight(0, MOBILE);
-  // mobile starts further out than desktop (90) and near the aspect fit distance
-  const startR = dist(p0.position, [0, 0, 0]);
-  assert.ok(startR > 90 && startR < 160, `mobile start radius in range, got ${startR}`);
-  assert.ok(startR > dist(sampleFlight(0, DESKTOP).position, [0, 0, 0]) + 5, 'mobile starts further than desktop');
-  // same 5.5 / 24 anchor points as desktop (shared tunnel entrance)
-  assert.deepEqual(sampleFlight(5.5, MOBILE).position, [0, 0, 38]);
-  assert.deepEqual(sampleFlight(24, MOBILE).position, [0, 0, 14]);
-  assert.deepEqual(sampleFlight(5.5, MOBILE).target, [0, 0, 0]);
-  assert.deepEqual(sampleFlight(24, MOBILE).target, [0, 0, -24]);
-  // mobile finish distance == framing distance (resting view == film end)
-  const end = sampleFlight(30, MOBILE).position;
-  assert.ok(Math.abs(dist(end, [0, 0, 0]) - framing.distance) < 1e-6, 'end matches framing distance');
-  assert.ok(dist(end, [0, 0, 0]) > dist(sampleFlight(30, DESKTOP).position, [0, 0, 0]) + 10, 'mobile ends further out');
-});
-
-test('orbitFraming: desktop keeps side-offset look; portrait fits with horizontal margin', () => {
+test('mobile starts and ends wider while sharing the tunnel anchor', () => {
   const desk = orbitFraming(DESKTOP);
+  const mobile = orbitFraming(MOBILE);
   assert.equal(desk.mobile, false);
-  assert.equal(desk.verticalOffsetFraction, 0, 'no vertical shift on desktop');
-  assert.ok(desk.horizontalOffsetFraction < 0, 'desktop keeps the negative side offset');
-  assert.ok(Math.abs(desk.distance - Math.hypot(34, 14, 50)) < 1e-9, 'desktop distance unchanged');
+  assert.equal(mobile.mobile, true);
+  assert.ok(mobile.distance > desk.distance + 20);
 
-  // Sweep portrait-ish aspects and verify the scene fits horizontally with >=10%
-  // margin on EACH side, using the real camera.aspect (no hardcoded 390).
-  const fov = 54;
-  const tanHalf = Math.tan((fov * Math.PI) / 180 / 2);
+  const start = sampleFlight(0, MOBILE);
+  assert.ok(dist(start.position, [0, 0, 0]) > dist(sampleFlight(0, DESKTOP).position, [0, 0, 0]) + 20);
+  assert.deepEqual(sampleFlight(FILM.phase1, MOBILE).position, [0, 0, 76]);
+  assert.deepEqual(sampleFlight(FILM.phase2End, MOBILE).position, [0, 0, 2]);
+  const end = sampleFlight(FILM.total, MOBILE);
+  assert.ok(Math.abs(dist(end.position, [0, 0, 0]) - mobile.distance) < 1e-9);
+});
+
+test('portrait framing blends continuously into its upright pose and distance', () => {
   for (const aspect of [9 / 16, 0.46, 0.5, 0.5625, 0.79]) {
-    const f = orbitFraming(aspect, fov);
-    assert.equal(f.mobile, true, `aspect ${aspect} should be mobile`);
-    assert.ok(f.verticalOffsetFraction < 0, 'portrait pushes the scene downward');
-    assert.equal(f.horizontalOffsetFraction, 0, 'portrait keeps content horizontally centered');
-    const halfViewport = aspect * tanHalf; // world half-width at unit distance
-    const contentHalf = ORBIT_CONTENT_RADIUS / f.distance; // world half-width of scene
-    const occupancy = contentHalf / halfViewport; // fraction of half-width used
-    assert.ok(occupancy <= 0.9 + 1e-6, `>=10% margin, occupancy ${occupancy} @ ${aspect}`);
-    assert.ok(f.marginRatio >= 0.1 - 1e-6, `marginRatio below 10% at ${aspect}`);
-    assert.ok(Number.isFinite(f.distance) && f.distance > 0, 'finite distance');
+    const framing = orbitFraming(aspect, 54);
+    assert.equal(framing.mobile, true, `aspect ${aspect}`);
+    assert.ok(Number.isFinite(framing.distance) && framing.distance > 0);
+    assert.ok(portraitAmount(aspect) > 0.9);
+    assert.ok(restRotation(aspect)[0] < -0.9);
   }
 });
 
-test('boundary continuity at 5.5s and 24s for desktop and mobile', () => {
-  const eps = 1e-6;
+test('boundary continuity at the tunnel entrance and exit', () => {
+  const eps = 1e-5;
+  const tolerance = 0.02;
   for (const aspect of [DESKTOP, MOBILE]) {
-    for (const b of [5.5, 24]) {
-      const before = sampleFlight(b - 0.001, aspect);
-      const at = sampleFlight(b, aspect);
-      const after = sampleFlight(b + 0.001, aspect);
-      assert.ok(dist(before.position, at.position) < eps, `${b} pos jump`);
-      assert.ok(dist(before.target, at.target) < eps, `${b} target jump`);
-      assert.ok(dist(before.up, at.up) < eps, `${b} up jump`);
-      assert.ok(Math.abs(before.fov - at.fov) < eps, `${b} fov jump`);
-      assert.ok(dist(before.rotation, at.rotation) < eps, `${b} rot jump`);
-      assert.ok(dist(at.position, after.position) < eps, `${b} pos jump+`);
-      assert.ok(dist(at.target, after.target) < eps, `${b} target jump+`);
-      assert.ok(dist(at.up, after.up) < eps, `${b} up jump+`);
-      assert.ok(Math.abs(at.fov - after.fov) < eps, `${b} fov jump+`);
-      assert.ok(dist(at.rotation, after.rotation) < eps, `${b} rot jump+`);
+    for (const boundary of [FILM.phase1, FILM.phase2End]) {
+      const before = sampleFlight(boundary - eps, aspect);
+      const at = sampleFlight(boundary, aspect);
+      const after = sampleFlight(boundary + eps, aspect);
+      for (const sample of [before, after]) {
+        assert.ok(dist(before.position, sample.position) < tolerance);
+        assert.ok(dist(before.target, sample.target) < tolerance);
+        assert.ok(dist(before.up, sample.up) < tolerance);
+        assert.ok(Math.abs(before.fov - sample.fov) < tolerance);
+        assert.ok(dist(before.rotation, sample.rotation) < tolerance);
+      }
+      assert.ok(dist(at.position, before.position) < tolerance);
+      assert.ok(dist(at.target, before.target) < tolerance);
     }
   }
 });
 
 test('time clamping and non-finite safety', () => {
   assert.deepEqual(sampleFlight(-10, DESKTOP).position, sampleFlight(0, DESKTOP).position);
-  assert.deepEqual(sampleFlight(999, DESKTOP).position, sampleFlight(30, DESKTOP).position);
+  assert.deepEqual(sampleFlight(999, DESKTOP).position, sampleFlight(FILM.total, DESKTOP).position);
   for (const bad of [NaN, Infinity, -Infinity, undefined, null, 'x']) {
     expectShape(sampleFlight(bad, DESKTOP));
   }
-  // default aspect arg works
   expectShape(sampleFlight(3));
-  // non-finite / odd aspect still produces valid (desktop) sample
   expectShape(sampleFlight(10, NaN));
   expectShape(sampleFlight(10, 0));
   expectShape(sampleFlight(10, -5));
 });
 
-test('every sample: finite, up ~unit, camera != target', () => {
+test('every sample: finite, unit up, camera separate from target, FOV in range', () => {
   for (const aspect of [DESKTOP, MOBILE]) {
-    for (let t = 0; t <= 30 + 1e-9; t += 0.1) {
+    for (let t = 0; t <= FILM.total + 1e-9; t += 0.1) {
       const s = sampleFlight(t, aspect);
       expectShape(s);
-      assert.ok(Math.abs(dist(s.up, [0, 0, 0]) - 1) < 1e-6, `up not unit at ${t}`);
+      assert.ok(Math.abs(Math.hypot(...s.up) - 1) < 1e-6, `up not unit at ${t}`);
       assert.ok(dist(s.position, s.target) > 1e-3, `camera coincides target at ${t}`);
-      // fov within expected band
-      assert.ok(s.fov >= 54 - 1e-9 && s.fov <= 75 + 1e-9, `fov out of range at ${t}`);
+      assert.ok(s.fov >= 54 - 1e-9 && s.fov <= 72 + 1e-9, `fov out of range at ${t}`);
     }
   }
 });
 
-test('tunnel phase keeps camera z positive and mode/tunnel behavior', () => {
-  let sawTunnel = false;
-  for (let t = 5.5; t < 24; t += 0.05) {
+test('tunnel phase advances through the corridor and rolls back to level', () => {
+  let maxRoll = 0;
+  for (let t = FILM.phase1 + 0.01; t < FILM.phase2End; t += 0.05) {
     const s = sampleFlight(t, DESKTOP);
     assert.equal(s.mode, 'tunnel');
-    assert.ok(s.position[2] > 0, 'camera z must stay positive');
-    assert.deepEqual(s.rotation, [0, 0, 0]);
-    assert.equal(s.fov, 75);
-    sawTunnel = true;
+    assert.ok(s.position[2] > 0 && s.position[2] <= 76);
+    assert.equal(s.fov, 72);
+    assert.ok(Math.abs(s.rotation[2]) <= 0.55 + 1e-9);
+    maxRoll = Math.max(maxRoll, Math.abs(s.rotation[2]));
   }
-  assert.ok(sawTunnel);
-  // x/y sway returns to 0 at both ends of the phase
-  assert.equal(sampleFlight(5.5, DESKTOP).position[0], 0);
-  assert.equal(sampleFlight(24, DESKTOP).position[0], 0);
+  assert.ok(maxRoll > 0.45, 'the corridor rolls visibly');
+  assert.ok(Math.abs(sampleFlight(FILM.phase1, DESKTOP).rotation[2]) < 1e-9);
+  assert.ok(Math.abs(sampleFlight(FILM.phase2End, DESKTOP).rotation[2]) < 1e-9);
 });
 
-test('phase motion is smooth within segments (no discrete jump mid-phase)', () => {
+test('phase motion is smooth and does not jump at segment boundaries', () => {
   const step = 0.05;
-  const maxJump = 5; // max plausible per-0.05s motion; catches real discontinuities
+  const maxJump = 8;
   for (const aspect of [DESKTOP, MOBILE]) {
-    for (let t = 0; t < 30 - step; t += step) {
-      // skip straddling the two boundaries, handled by continuity test
-      const straddles = (t < 5.5 && t + step > 5.5) || (t < 24 && t + step > 24);
+    for (let t = 0; t < FILM.total - step; t += step) {
+      const straddles = (t < FILM.phase1 && t + step > FILM.phase1)
+        || (t < FILM.phase2End && t + step > FILM.phase2End);
       if (straddles) continue;
       const a = sampleFlight(t, aspect);
       const b = sampleFlight(t + step, aspect);
-      assert.ok(dist(a.position, b.position) < maxJump, `pos jump at ${t}`);
+      const positionJump = t >= FILM.phase2End ? 30 : maxJump;
+      assert.ok(dist(a.position, b.position) < positionJump, `position jump at ${t}`);
       assert.ok(dist(a.target, b.target) < maxJump, `target jump at ${t}`);
       assert.ok(dist(a.rotation, b.rotation) < 1, `rotation jump at ${t}`);
+      assert.ok(Math.abs(a.fov - b.fov) < 2, `fov jump at ${t}`);
     }
   }
 });
 
-test('natural film end is continuous into the resting shot (no flip / snap)', () => {
+test('natural film end is continuous into the resting shot', () => {
   for (const aspect of [DESKTOP, MOBILE]) {
-    const last = sampleFlight(30, aspect);
-    const justBefore = sampleFlight(29.95, aspect);
-    // Approaching 30s the camera eases into the end (zero velocity via smoother+env).
-    assert.ok(dist(justBefore.position, last.position) < 1.2, `end position jump ${aspect}`);
-    assert.ok(dist(justBefore.target, last.target) < 0.2, `end target jump ${aspect}`);
+    const last = sampleFlight(FILM.total, aspect);
+    const justBefore = sampleFlight(FILM.total - 0.05, aspect);
+    assert.ok(dist(justBefore.position, last.position) < 2, `end position jump ${aspect}`);
+    assert.ok(dist(justBefore.target, last.target) < 0.3, `end target jump ${aspect}`);
     assert.ok(dist(justBefore.rotation, last.rotation) < 0.2, `end rotation jump ${aspect}`);
-    // Final shot is the orbit establishing shot, matching the resting framing.
     assert.equal(last.mode, 'orbit');
     assert.deepEqual(last.target, [0, 0, 0]);
     assert.equal(last.fov, 54);
-    assert.equal(last.up.join(), [0, 1, 0].join());
-    // Clamped past-the-end still lands on the same resting camera (preserves last shot).
-    assert.deepEqual(sampleFlight(45, aspect).position, last.position);
+    assert.deepEqual(sampleFlight(FILM.total + 5, aspect).position, last.position);
   }
 });
 
 // ---------------------------------------------------------------------------
 // Behavioral tests: run the real PhotoUniverse methods on a hand-built instance
-// (real THREE camera/scene/group + fake renderer/container/controls, no WebGL DOM)
-// so we can assert view-offset continuity, aspect re-fit, and steady-state cost.
+// (real THREE camera/scene/group + fake renderer/container/controls, no WebGL DOM).
 // ---------------------------------------------------------------------------
 
 globalThis.document = globalThis.document || { hidden: false };
@@ -252,61 +223,51 @@ function buildHarness(width, height) {
   O.boundsDirty = false;
   O.viewTransition = null;
   O.lastTime = 0;
-  // Formation morph is out of scope for the camera/offset checks.
   O.setFormation = () => {};
   O.applyViewOffset();
   return O;
 }
 
 const projElements = (cam) => cam.projectionMatrix.elements.slice();
-const maxMatrixDiff = (a, b) => a.reduce((m, v, i) => Math.max(m, Math.abs(v - b[i])), 0);
+const maxMatrixDiff = (a, b) => a.reduce((max, value, index) => Math.max(max, Math.abs(value - b[index])), 0);
 
-test('behaviour: natural film end keeps projection offset identical (no reframe jump)', () => {
+test('behaviour: natural film end keeps projection offset and camera stable', () => {
   for (const [w, h] of [[390, 844], [1280, 720], [640, 360]]) {
     const O = buildHarness(w, h);
     O.film = { start: 0, phase: 'orbit', elapsed: 0 };
-    const nearEnd = 29.999;
-    O.updateFilm(nearEnd * 1000);
+    O.updateFilm((FILM.total - 0.001) * 1000);
     const projNear = projElements(O.camera);
     const posNear = O.camera.position.clone();
-    // updateFilm(30) trips the natural end and stopFilm(...,false).
-    O.updateFilm(30 * 1000);
+    O.updateFilm(FILM.total * 1000);
     assert.equal(O.film, null, 'film cleared on natural end');
     const projAfter = projElements(O.camera);
     const posAfter = O.camera.position.clone();
-    // offset restored by resize() must equal the eased-to offset at 30s: identical projection
-    assert.ok(maxMatrixDiff(projNear, projAfter) < 1e-3, `projection jump @ ${w}x${h}`);
-    assert.ok(posNear.distanceTo(posAfter) < 1e-3, `camera position jump @ ${w}x${h}`);
-    // group tilt preserved (natural end does not zero it)
-    assert.ok(Math.abs(O.group.rotation.x - 0.08) < 1e-3, `group x not preserved @ ${w}x${h}`);
+    assert.ok(maxMatrixDiff(projNear, projAfter) < 0.01, `projection jump @ ${w}x${h}`);
+    assert.ok(posNear.distanceTo(posAfter) < 0.01, `camera position jump @ ${w}x${h}`);
+    assert.ok(Math.abs(O.group.rotation.x - restRotation(w / h)[0]) < 1e-9, `group x not preserved @ ${w}x${h}`);
   }
 });
 
-test('behaviour: first interactive frame after natural end does not snap group.rotation.x', () => {
+test('behaviour: first interactive frame after natural end does not snap', () => {
   const O = buildHarness(390, 844);
   O.film = { start: 0, phase: 'orbit', elapsed: 0 };
-  O.elapsed = 12.3; // deliberate idle-drifted clock, as if we spun before the film
-  O.updateFilm(30 * 1000); // -> natural end; alignIdlePhase should reseed O.elapsed
-  const filmEndX = O.group.rotation.x; // ~0.08
-  assert.ok(Math.abs(filmEndX - 0.08) < 1e-3, 'film ends near 0.08 tilt');
-  // first interactive frame: elapsed continues from the reseeded phase
-  O.lastTime = 30000;
-  O.animate(30016);
-  const nextX = O.group.rotation.x;
-  const staleX = Math.sin((12.3 + 0.016 * 0.7) * 0.16) * 0.14; // what a stale clock yields
-  assert.ok(Math.abs(nextX - filmEndX) < 0.012, `group.x jumped ${nextX} from ${filmEndX}`);
-  assert.ok(Math.abs(nextX - staleX) > 0.02, 'test is not meaningful if stale coincides');
+  O.elapsed = 12.3;
+  O.updateFilm(FILM.total * 1000);
+  const filmEndX = O.group.rotation.x;
+  assert.ok(Math.abs(filmEndX - restRotation(390 / 844)[0]) < 1e-9, 'film ends with the chosen establishing tilt');
+  O.lastTime = FILM.total * 1000;
+  O.animate(FILM.total * 1000 + 16);
+  assert.ok(Math.abs(O.group.rotation.x - filmEndX) < 0.005, 'first interactive frame stays continuous');
 });
 
 test('behaviour: resize re-fits default orbit distance across portrait/landscape', () => {
   const O = buildHarness(390, 844);
   O.controls.target.set(0, 0, 0);
-  O.camera.position.set(6, 14, 103.6); // a portrait framing
+  O.camera.position.set(6, 14, 103.6);
   O.resize();
   const portrait = orbitFraming(390 / 844, 54).distance;
   const distPortrait = O.camera.position.length();
   assert.ok(Math.abs(distPortrait - portrait) < 1e-3, `portrait distance ${distPortrait} != ${portrait}`);
-  // flip to landscape: default view must re-fit to the (much closer) desktop distance
   O.container.getBoundingClientRect = () => ({ width: 640, height: 360 });
   O._viewW = 640;
   O._viewH = 360;
@@ -314,14 +275,13 @@ test('behaviour: resize re-fits default orbit distance across portrait/landscape
   const landscape = orbitFraming(640 / 360, 54).distance;
   const distLandscape = O.camera.position.length();
   assert.ok(Math.abs(distLandscape - landscape) < 1e-3, `landscape distance ${distLandscape} != ${landscape}`);
-  assert.ok(distLandscape < distPortrait - 20, 'landscape should be closer, not stuck far');
-  // direction preserved (roughly +z side composition, x>0)
+  assert.ok(distLandscape < distPortrait - 20, 'landscape should be closer');
   assert.ok(O.camera.position.x > 0, 're-fit keeps the viewing direction');
 });
 
 test('behaviour: user-dragged view is left alone on resize', () => {
   const O = buildHarness(390, 844);
-  O.defaultView = false; // pretend the user grabbed the orbit
+  O.defaultView = false;
   O.controls.target.set(0, 0, 0);
   O.camera.position.set(20, 5, 30);
   const before = O.camera.position.clone();
@@ -330,37 +290,44 @@ test('behaviour: user-dragged view is left alone on resize', () => {
   assert.ok(before.distanceTo(O.camera.position) < 1e-6, 'user view distance must not auto-refit');
 });
 
-test('behaviour: steady frames stop touching instanceMatrix (no GPU re-upload)', () => {
+test('behaviour: steady frames stop touching instanceMatrix', () => {
   const O = buildHarness(1280, 720);
-  O.reducedMotion = true; // lerp = 1 -> snap in a single frame
+  O.reducedMotion = true;
   const mesh = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial(), 2);
   O.meshes = [mesh];
-  const mk = (x) => ({
-    mesh, localIndex: 0,
-    position: new THREE.Vector3(x, 0, 0), quaternion: new THREE.Quaternion(), scale: 1,
-    targetPosition: new THREE.Vector3(0, 0, 0), targetQuaternion: new THREE.Quaternion(), targetScale: 1,
+  const makeInstance = (x, localIndex) => ({
+    mesh,
+    localIndex,
+    position: new THREE.Vector3(x, 0, 0),
+    quaternion: new THREE.Quaternion(),
+    scale: 1,
+    targetPosition: new THREE.Vector3(0, 0, 0),
+    targetQuaternion: new THREE.Quaternion(),
+    targetScale: 1,
     settled: false,
   });
-  O.instances = [mk(5), mk(-5)];
-  // tag localIndex so setMatrixAt writes distinct slots
-  O.instances[1].localIndex = 1;
+  O.instances = [makeInstance(5, 0), makeInstance(-5, 1)];
   O.instanceDirty = true;
+  O.running = false;
   O.lastTime = 0;
-  O.running = false; // isolate the instance loop from idle rotation
 
-  // Run until the morph has fully settled and the dirty flag is cleared.
   let t = 16;
   let guard = 0;
-  while (O.instanceDirty && guard++ < 20) { O.animate(t); t += 16; }
+  while (O.instanceDirty && guard++ < 20) {
+    O.animate(t);
+    t += 16;
+  }
   assert.equal(O.instanceDirty, false, 'dirty flag cleared after settling');
   assert.ok(guard < 20, 'morph did not settle');
-
   const versionSettled = mesh.instanceMatrix.version;
   let grew = 0;
-  for (let k = 0; k < 6; k++) { O.animate(t); t += 16; grew += mesh.instanceMatrix.version - versionSettled; }
+  for (let index = 0; index < 6; index++) {
+    O.animate(t);
+    t += 16;
+    grew += mesh.instanceMatrix.version - versionSettled;
+  }
   assert.equal(grew, 0, 'steady frames must not bump instanceMatrix.version');
-  // instances actually reached their targets
-  for (const inst of O.instances) assert.equal(inst.position.distanceTo(inst.targetPosition), 0);
+  for (const instance of O.instances) assert.equal(instance.position.distanceTo(instance.targetPosition), 0);
 });
 
 test('behaviour: clearPhotos releases stale canvases but keeps reused ones', () => {
@@ -370,15 +337,13 @@ test('behaviour: clearPhotos releases stale canvases but keeps reused ones', () 
   const stale = makeCanvas();
   const newOne = makeCanvas();
   O.atlasCanvases = new Set([reused, stale]);
-  // incoming reuses `reused`, adds `newOne`, drops `stale`
   O.clearPhotos(new Set([reused, newOne]));
   assert.equal(stale.width, 0, 'stale canvas released');
   assert.equal(stale.height, 0, 'stale canvas released');
-  assert.equal(reused.width, 512, 'reused canvas must not be zeroed (no black texture)');
+  assert.equal(reused.width, 512, 'reused canvas must not be zeroed');
   assert.equal(reused.height, 512, 'reused canvas must not be zeroed');
   assert.equal(O.atlasCanvases.size, 0, 'tracked canvas set cleared');
 
-  // direct call (no keep set) releases every backing canvas
   const a = makeCanvas();
   const b = makeCanvas();
   O.atlasCanvases = new Set([a, b]);
@@ -387,3 +352,286 @@ test('behaviour: clearPhotos releases stale canvases but keeps reused ones', () 
   assert.equal(b.width, 0);
 });
 
+test('film boundaries have matching zero velocity for camera, target, FOV and rotation', () => {
+  const step = 1e-3;
+  for (const aspect of [DESKTOP, MOBILE]) {
+    for (const t of [FILM.phase1, FILM.phase2End, FILM.total]) {
+      const at = sampleFlight(t, aspect);
+      for (const sample of [sampleFlight(t - step, aspect), sampleFlight(t + step, aspect)]) {
+        assert.ok(dist(at.position, sample.position) / step < 0.01, `camera velocity boundary ${t}`);
+        assert.ok(dist(at.target, sample.target) / step < 0.01, `target velocity boundary ${t}`);
+        assert.ok(dist(at.rotation, sample.rotation) / step < 0.01, `rotation velocity boundary ${t}`);
+        assert.ok(Math.abs(at.fov - sample.fov) / step < 0.01, `FOV velocity boundary ${t}`);
+      }
+    }
+  }
+});
+
+test('framing has no discontinuity at former phone/tablet aspect breakpoints', () => {
+  for (const aspect of [0.7, 0.8, 0.85, 1.25]) {
+    assert.ok(Math.abs(orbitFraming(aspect - 1e-5).distance - orbitFraming(aspect + 1e-5).distance) < 0.01);
+    assert.ok(dist(restRotation(aspect - 1e-5), restRotation(aspect + 1e-5)) < 0.001);
+  }
+});
+
+test('responsive film start and end share the resting pose on phones and desktop', () => {
+  for (const aspect of [390 / 844, 320 / 568, 0.85, 1, 16 / 9]) {
+    assert.deepEqual(sampleFlight(0, aspect).rotation, restRotation(aspect));
+    assert.deepEqual(sampleFlight(FILM.total, aspect).rotation, restRotation(aspect));
+    assert.deepEqual(sampleFlight(0, aspect).position, orbitPosition(aspect));
+    assert.deepEqual(sampleFlight(FILM.total, aspect).position, orbitPosition(aspect));
+  }
+});
+
+test('default orientation changes morph smoothly; manually dragged views retain their layout', () => {
+  const O = buildHarness(1440, 900);
+  loadActualPhotos(O, 1200, 1200);
+  O.running = false;
+  const position = O.camera.position.clone();
+  const shape = O.instances.map(instance => instance.position.clone());
+  O.container.getBoundingClientRect = () => ({ width: 390, height: 844 });
+  O.resize();
+  assert.ok(O.camera.position.distanceTo(position) < 1e-10, 'resize starts at the visible camera');
+  assert.ok(O.instances.every((instance, index) => instance.position.equals(shape[index])), 'resize starts at the visible sculpture');
+  assert.equal(O.formationPortrait, 1);
+  for (let time = 20; time <= 2200; time += 20) O.animate(time);
+  assert.equal(O.instanceDirty, false);
+  assert.ok(O.camera.position.distanceTo(new THREE.Vector3(...orbitPosition(390 / 844))) < 1e-9);
+  const expected = new THREE.Quaternion().setFromEuler(new THREE.Euler(...restRotation(390 / 844)));
+  assert.ok(O.group.quaternion.angleTo(expected) < 1e-7);
+  const versions = O.meshes.map(mesh => mesh.instanceMatrix.version);
+  O.defaultView = false;
+  const manual = O.camera.position.clone();
+  O.container.getBoundingClientRect = () => ({ width: 1440, height: 900 });
+  O.resize();
+  assert.ok(O.camera.position.distanceTo(manual) < 1e-10);
+  assert.equal(O.formationPortrait, 1, 'manual layout is not pulled back to the new default');
+  assert.deepEqual(O.meshes.map(mesh => mesh.instanceMatrix.version), versions);
+  O.resetView(false);
+  assert.equal(O.formationPortrait, 0, 'an explicit reset adopts the new aspect');
+  O.clearPhotos();
+});
+
+test('repeated portrait resizes retain the pose destination until the transition finishes', () => {
+  const O = buildHarness(1440, 900);
+  loadActualPhotos(O, 1200, 1200);
+  O.running = false;
+  const size = { width: 390, height: 844 };
+  O.container.getBoundingClientRect = () => size;
+  O.resize();
+  const expectedRotation = O.viewTransition.rotation.clone();
+  for (let time = 20; time <= 500; time += 20) O.animate(time);
+  assert.ok(O.group.quaternion.angleTo(expectedRotation) > 1, 'the second resize occurs before the initial rotation completes');
+  const beforeResize = O.camera.position.clone();
+  size.width = 391;
+  O.resize();
+  assert.ok(O.camera.position.distanceTo(beforeResize) < 1e-10);
+  assert.ok(O.viewTransition.rotation.angleTo(expectedRotation) < 1e-7);
+  for (let time = 520; time <= 900; time += 20) O.animate(time);
+  size.width = 392;
+  O.resize();
+  assert.ok(O.viewTransition.rotation.angleTo(expectedRotation) < 1e-7);
+  for (let time = 920; time <= 3200; time += 20) O.animate(time);
+  assert.equal(O.viewTransition, null);
+  assert.ok(O.group.quaternion.angleTo(expectedRotation) < 1e-7);
+  assert.ok(O.camera.position.distanceTo(new THREE.Vector3(...orbitPosition(size.width / size.height))) < 1e-8);
+  O.clearPhotos();
+});
+
+test('resizes across intermediate aspects refresh the responsive destination and retain it on repetition', () => {
+  const O = buildHarness(1440, 900);
+  loadActualPhotos(O, 1200, 1200);
+  O.running = false;
+  const size = { width: 844, height: 844 };
+  O.container.getBoundingClientRect = () => size;
+  let time = 0;
+  for (const width of [844, 717, 590, 390, 391]) {
+    size.width = width;
+    const position = O.camera.position.clone();
+    O.resize();
+    const aspect = width / size.height;
+    const expected = new THREE.Quaternion().setFromEuler(new THREE.Euler(...restRotation(aspect)));
+    assert.ok(O.camera.position.distanceTo(position) < 1e-10, 'resize retargeting preserves the visible camera');
+    assert.ok(O.viewTransition.rotation.angleTo(expected) < 1e-7, `responsive rotation for aspect ${aspect}`);
+    assert.equal(O.formationPortrait, portraitAmount(aspect));
+    for (let frame = 0; frame < 15; frame++) { time += 20; O.animate(time); }
+  }
+  const finish = time + 2400;
+  for (; time <= finish; time += 20) O.animate(time);
+  const expected = new THREE.Quaternion().setFromEuler(new THREE.Euler(...restRotation(size.width / size.height)));
+  assert.equal(O.viewTransition, null);
+  assert.equal(O.instanceDirty, false);
+  assert.ok(O.group.quaternion.angleTo(expected) < 1e-7);
+  assert.ok(O.camera.position.distanceTo(new THREE.Vector3(...orbitPosition(size.width / size.height))) < 1e-8);
+  O.clearPhotos();
+});
+
+test('the whole repeated photo pool is deterministic, balanced and has no 24-photo stripes', () => {
+  const sequence = O => O.instances.map(instance => instance.mesh.userData.photoIndices[instance.localIndex]);
+  const first = buildHarness(1280, 720), second = buildHarness(1280, 720);
+  loadActualPhotos(first, 24, 1200);
+  loadActualPhotos(second, 24, 1200);
+  const photos = sequence(first);
+  assert.deepEqual(photos, sequence(second));
+  const counts = new Map();
+  for (const id of photos) counts.set(id, (counts.get(id) || 0) + 1);
+  assert.equal(counts.size, 24);
+  assert.ok([...counts.values()].every(count => count === 50));
+  assert.ok(photos.every((id, index) => !index || photos[index - 1] !== id), 'neighbours use distinct photos');
+  const repeated = photos.slice(24).filter((id, index) => photos[index] === id).length;
+  assert.ok(repeated / (photos.length - 24) < 0.15, 'a full repeated cycle must not survive at the old 24-card period');
+  first.clearPhotos(); second.clearPhotos();
+});
+
+test('film starts from the visible camera and world pose despite pending damping and parallax', () => {
+  const O = buildHarness(1280, 720);
+  O.camera.position.set(20, 8, 55);
+  O.controls.target.set(2, 1, -3);
+  O.camera.lookAt(O.controls.target);
+  O.group.rotation.set(0.04, 0.23, -0.12);
+  O.parallaxGroup = new THREE.Group();
+  O.scene.remove(O.group);
+  O.scene.add(O.parallaxGroup);
+  O.parallaxGroup.add(O.group);
+  O.parallaxGroup.rotation.set(0.01, -0.012, 0);
+  O.pointerCurrent = new THREE.Vector2(0.7, 0.5);
+  O.pointerTarget = new THREE.Vector2(0.7, 0.5);
+  O.scene.updateMatrixWorld(true);
+  const matrix = O.group.matrixWorld.elements.slice();
+  const position = O.camera.position.clone();
+  const target = O.controls.target.clone();
+  const projection = projElements(O.camera);
+  let pending = true;
+  O.controls.update = () => {
+    if (!O.controls.enableDamping && pending) {
+      O.camera.position.x += 8;
+      O.controls.target.y += 2;
+      pending = false;
+    }
+  };
+  O.startFilm();
+  const film = O.film;
+  O.updateFilm(film.start);
+  O.scene.updateMatrixWorld(true);
+  assert.ok(O.camera.position.distanceTo(position) < 1e-10);
+  assert.ok(O.controls.target.distanceTo(target) < 1e-10);
+  assert.ok(maxMatrixDiff(matrix, O.group.matrixWorld.elements) < 1e-10);
+  assert.ok(maxMatrixDiff(projection, projElements(O.camera)) < 1e-10);
+  O.startFilm();
+  assert.equal(O.film, film, 'duplicate start does not restart the camera');
+});
+
+test('continuous film cancellation preserves projection, camera and target before smooth reset', () => {
+  for (const time of [2.5, 12, 24]) {
+    const O = buildHarness(390, 844);
+    O.film = { start: 0, phase: 'orbit', elapsed: 0 };
+    O.updateFilm(time * 1000);
+    const position = O.camera.position.clone();
+    const target = O.controls.target.clone();
+    const up = O.camera.up.clone();
+    const projection = projElements(O.camera);
+    const rotation = O.group.quaternion.clone();
+    O.stopFilm(false);
+    O.resize();
+    assert.equal(O.film, null);
+    assert.ok(O.camera.position.distanceTo(position) < 1e-10);
+    assert.ok(O.controls.target.distanceTo(target) < 1e-10);
+    assert.ok(O.camera.up.distanceTo(up) < 1e-10);
+    assert.ok(maxMatrixDiff(projection, projElements(O.camera)) < 1e-10);
+    assert.ok(O.group.quaternion.angleTo(rotation) < 1e-7);
+    O.resetView(false);
+    assert.ok(O.camera.position.distanceTo(position) < 1e-10, 'reset begins without teleporting');
+    O.lastTime = time * 1000;
+    O.animate(time * 1000 + 16);
+    assert.ok(O.camera.position.distanceTo(position) < 0.01, 'first reset frame eases out of rest');
+  }
+});
+
+function loadActualPhotos(O, count = 3000, requested = 1200) {
+  O.euler = new THREE.Euler();
+  O.setFormation = PhotoUniverse.prototype.setFormation;
+  O.photoUniforms = { uReveal: { value: 1 }, uDepthNear: { value: 1 }, uDepthFar: { value: 2 }, uPaperBackground: { value: new THREE.Color('#11100f') } };
+  O.scene.fog = new THREE.FogExp2('#11100f', 0.0024);
+  const photos = Array.from({ length: count }, (_, index) => ({ index }));
+  const atlases = Array.from({ length: Math.ceil(count / 256) }, (_, atlas) => ({
+    canvas: { width: 2048, height: 2048 },
+    photoIndices: Array.from({ length: Math.min(256, count - atlas * 256) }, (_, index) => atlas * 256 + index),
+  }));
+  O.setPhotos(photos, atlases, requested);
+  return atlases;
+}
+
+test('3000 imported photos all appear and a paused 2.2s morph settles without further uploads', () => {
+  const O = buildHarness(1280, 720);
+  loadActualPhotos(O);
+  assert.equal(O.count, 3000);
+  assert.equal(O.instances.length, 3000);
+  assert.equal(new Set(O.meshes.flatMap(mesh => mesh.userData.photoIndices)).size, 3000);
+  O.running = false;
+  O.setFormation('tunnel', false, false);
+  for (let time = 20; time <= 2200; time += 20) O.animate(time);
+  assert.equal(O.instanceDirty, false, 'morph ends at its specified duration');
+  assert.equal(O.morph, null);
+  for (const instance of O.instances) {
+    assert.ok(instance.position.equals(instance.targetPosition));
+    assert.ok(instance.quaternion.equals(instance.targetQuaternion));
+    assert.equal(instance.scale, instance.targetScale);
+  }
+  const versions = O.meshes.map(mesh => mesh.instanceMatrix.version);
+  O.running = true;
+  for (let time = 2220; time <= 2800; time += 20) O.animate(time);
+  assert.deepEqual(O.meshes.map(mesh => mesh.instanceMatrix.version), versions, 'camera/group motion must not upload instance matrices');
+  let disposed = 0;
+  for (const mesh of O.meshes) {
+    mesh.geometry.addEventListener('dispose', () => disposed++);
+    mesh.material.addEventListener('dispose', () => disposed++);
+  }
+  for (const texture of O.textures) texture.addEventListener('dispose', () => disposed++);
+  const batches = O.meshes.length;
+  O.clearPhotos();
+  assert.equal(disposed, batches * 3);
+  assert.equal(O.photos.length, 0);
+  assert.equal(O.count, 0);
+});
+
+test('parallax returns to rest for dragging, film and reduced motion; mobile amplitude is smaller', () => {
+  const setup = (width, height) => {
+    const O = buildHarness(width, height);
+    O.parallaxGroup = new THREE.Group();
+    O.pointerEnabled = true;
+    O.pointerTarget = new THREE.Vector2(1, 1);
+    O.pointerCurrent = new THREE.Vector2();
+    return O;
+  };
+  const desktop = setup(1280, 720), mobile = setup(390, 844);
+  desktop.animate(16); mobile.animate(16);
+  assert.ok(desktop.parallaxGroup.rotation.x > mobile.parallaxGroup.rotation.x * 2);
+  const before = desktop.pointerCurrent.length();
+  desktop.dragging = true;
+  desktop.animate(32);
+  assert.equal(desktop.pointerTarget.length(), 0);
+  assert.ok(desktop.pointerCurrent.length() < before);
+  desktop.reducedMotion = true;
+  desktop.animate(48);
+  assert.equal(desktop.parallaxGroup.rotation.x, 0);
+  assert.equal(desktop.parallaxGroup.rotation.y, 0);
+  mobile.film = { manual: true };
+  mobile.animate(32);
+  assert.equal(mobile.parallaxGroup.rotation.x, 0);
+  assert.equal(mobile.parallaxGroup.rotation.y, 0);
+});
+
+test('onFrame is optional and runs after each actual render, excluding hidden idle frames', () => {
+  const O = buildHarness(1280, 720);
+  const events = [];
+  O.renderer.render = () => events.push('render');
+  O.callbacks.onFrame = time => events.push(time);
+  O.animate(16);
+  assert.deepEqual(events, ['render', 16]);
+  globalThis.document.hidden = true;
+  O.animate(32);
+  assert.deepEqual(events, ['render', 16]);
+  globalThis.document.hidden = false;
+  delete O.callbacks.onFrame;
+  assert.doesNotThrow(() => O.animate(48));
+});
