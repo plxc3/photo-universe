@@ -1,16 +1,62 @@
 import './style.css';
-import { createIcons, Plus, Info, Play, Pause, Download, Square, SlidersHorizontal, X, Eye, EyeOff, Maximize, Minimize, RotateCcw, ArrowLeft, ArrowRight, ArrowUpRight, Grid2x2 } from 'lucide';
+import {
+  createIcons,
+  Plus,
+  Info,
+  Play,
+  Pause,
+  Download,
+  Square,
+  SlidersHorizontal,
+  X,
+  Eye,
+  EyeOff,
+  Maximize,
+  Minimize,
+  RotateCcw,
+  ArrowLeft,
+  ArrowRight,
+  ArrowUpRight,
+  Grid2x2,
+  Volume2,
+  VolumeX,
+} from 'lucide';
 import { PhotoUniverse } from './scene.js';
 import { FORMATIONS } from './formations.js';
 import { loadDemoPhotos, loadLocalPhotos, buildPhotoAtlases, releasePhotos, getPhotoThumbnail } from './photos.js';
-import { CanvasRecorder } from './recording.js';
+import { CanvasRecorder, CINEMA_VIDEO_BITS_PER_SECOND } from './recording.js';
 import { FrameProfiler } from './performance.js';
+import { SpatialSoundscape } from './audio.js';
 
 const $ = id => document.getElementById(id);
-const icons = { Plus, Info, Play, Pause, Download, Square, SlidersHorizontal, X, Eye, EyeOff, Maximize, Minimize, RotateCcw, ArrowLeft, ArrowRight, ArrowUpRight, Grid2x2 };
+const icons = {
+  Plus,
+  Info,
+  Play,
+  Pause,
+  Download,
+  Square,
+  SlidersHorizontal,
+  X,
+  Eye,
+  EyeOff,
+  Maximize,
+  Minimize,
+  RotateCcw,
+  ArrowLeft,
+  ArrowRight,
+  ArrowUpRight,
+  Grid2x2,
+  Volume2,
+  VolumeX,
+};
 const drawIcons = () => createIcons({ icons, attrs: { 'aria-hidden': 'true' } });
-const inspecting = new URLSearchParams(location.search).has('inspect');
+const params = new URLSearchParams(location.search);
+const inspecting = params.has('inspect');
+const debugEnabled = inspecting || params.has('debug');
 const profiler = new FrameProfiler();
+const soundscape = new SpatialSoundscape();
+
 let universe;
 let photos = [];
 let fallbackAtlases = [];
@@ -26,6 +72,7 @@ let galleryPlaying = true;
 let galleryPage = 0;
 let dragging = 0;
 let filmFocus;
+let focusTrigger;
 let profileTimer;
 let lastProfileDisplay = 0;
 let galleryGeneration = 0;
@@ -35,24 +82,66 @@ let photoRequest;
 let photoPointer;
 let photoFeedbackTimer;
 let photoTransitionTimer;
+let scrubbingFilm = false;
+let exportAspect = 'auto';
 const photoPointers = new Set();
 const galleryUrls = new Set();
 const PAGE_SIZE = 24;
 const SCENE_POSITIONS = 3000;
 
 drawIcons();
+
 function toast(message) {
   clearTimeout(toastTimer);
   $('toast').textContent = message;
   $('toast').hidden = false;
   toastTimer = setTimeout(() => { $('toast').hidden = true; }, 4800);
 }
+
+function actLabelForTime(seconds) {
+  if (seconds < 3.6) return '序幕 · 星环';
+  if (seconds < 5.8) return '第一幕 · 漩涡坍缩';
+  if (seconds < 21.8) return '第二幕 · 螺旋走廊';
+  if (seconds < 25.4) return '第三幕 · 门廊重组';
+  return '终章 · 晶格呼吸';
+}
+
+function syncFilmReadout(seconds) {
+  $('film-time').textContent = '00:' + String(Math.floor(seconds)).padStart(2, '0') + ' / 00:30';
+  $('film-act').textContent = actLabelForTime(seconds);
+  $('film-progress').value = seconds;
+  if (!scrubbingFilm) {
+    $('film-scrubber').value = String(Math.min(29.65, seconds));
+  }
+}
+
+function syncSoundUI() {
+  const active = !soundscape.muted;
+  const button = $('sound-toggle');
+  if (!button) return;
+  button.setAttribute('aria-pressed', String(active));
+  const label = active ? '静音空间音效' : '开启空间音效';
+  button.setAttribute('aria-label', label);
+  button.title = label;
+  button.innerHTML = '<i data-lucide="' + (active ? 'volume-2' : 'volume-x') + '" aria-hidden="true"></i>';
+  drawIcons();
+}
+
+function wakeAudio() {
+  if (!soundscape.muted) soundscape.ensureStarted();
+}
+window.addEventListener('pointerdown', wakeAudio, { passive: true });
+window.addEventListener('keydown', event => {
+  if (!event.metaKey && !event.ctrlKey && !event.altKey) wakeAudio();
+}, { passive: true });
+
 function updateMode(mode) {
   $('app').classList.toggle('mode-tunnel', mode === 'tunnel');
   const index = FORMATIONS.findIndex(formation => formation.id === mode);
-  $('mode-name').textContent = FORMATIONS[index].label;
+  if (index >= 0) $('mode-name').textContent = FORMATIONS[index].label;
   document.querySelectorAll('[data-mode]').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.mode === mode)));
 }
+
 function syncPlaying() {
   const active = Boolean(universe?.running);
   $('play').innerHTML = '<i data-lucide="' + (active ? 'pause' : 'play') + '" aria-hidden="true"></i>';
@@ -60,12 +149,35 @@ function syncPlaying() {
   $('play').title = active ? '暂停旋转' : '继续旋转';
   drawIcons();
 }
-function showPhoto(index) {
+
+function updateFocusCaption(photo, position) {
+  $('focus-title').textContent = photo.source === 'demo' && photo.author ? photo.author : photo.name;
+  $('focus-number').textContent = (position + 1).toLocaleString() + ' / ' + validPhotoIndices.length.toLocaleString();
+}
+
+function showPhoto(index, instanceIndex = -1) {
   if (busy || universe?.film) return;
   const position = validPhotoIndices.indexOf(index);
   if (position < 0) return;
   selectedPhoto = position;
   const photo = photos[index];
+
+  // Primary 3D In-Situ Gaze: fly camera directly to the physical photograph card.
+  if (universe) {
+    if ($('gallery-dialog').open) {
+      $('gallery-dialog').close();
+    }
+    if (!universe.focusState) {
+      focusTrigger = document.activeElement;
+    }
+    if (universe.focusPhoto(index, instanceIndex)) {
+      updateFocusCaption(photo, position);
+      soundscape.playFocusPulse(true);
+      return;
+    }
+  }
+
+  // Fallback HTML modal when WebGL is unavailable.
   const generation = ++photoGeneration;
   clearTimeout(photoFeedbackTimer);
   if (photoRequest) photoRequest.src = '';
@@ -74,8 +186,6 @@ function showPhoto(index) {
   $('photo-stage').setAttribute('aria-busy', 'true');
   $('photo-stage').dataset.state = 'loading';
   $('photo-stage').classList.toggle('has-photo', hasPhoto);
-  // Keep the last decoded photograph on screen. Fast local/cached switches
-  // never flash an empty stage or a one-frame loading indicator.
   $('photo-feedback').hidden = hasPhoto;
   if (hasPhoto) photoFeedbackTimer = setTimeout(() => {
     if (generation === photoGeneration && $('photo-dialog').open) $('photo-feedback').hidden = false;
@@ -129,11 +239,13 @@ function showPhoto(index) {
     photoRequest = null;
   });
 }
+
 function nextPhoto(step) {
   if (!validPhotoIndices.length || busy) return;
   const position = (selectedPhoto + step + validPhotoIndices.length) % validPhotoIndices.length;
   showPhoto(validPhotoIndices[position]);
 }
+
 function clearGalleryThumbnails() {
   galleryGeneration++;
   galleryAbort?.abort();
@@ -142,12 +254,14 @@ function clearGalleryThumbnails() {
   galleryUrls.clear();
   $('gallery-grid').replaceChildren();
 }
+
 function releaseAtlasCanvases(atlases) {
   for (const { canvas } of atlases || []) {
     canvas.width = 0;
     canvas.height = 0;
   }
 }
+
 function renderGallery() {
   clearGalleryThumbnails();
   galleryAbort = new AbortController();
@@ -188,14 +302,17 @@ function renderGallery() {
   $('gallery-next').disabled = end >= validPhotoIndices.length;
   $('gallery-dialog').scrollTop = 0;
 }
+
 function openGallery() {
   if (busy || !validPhotoIndices.length) return;
+  if (universe?.focusState) universe.closeFocus(true);
   galleryPage = Math.floor(selectedPhoto / PAGE_SIZE);
   renderGallery();
   galleryPlaying = universe?.running ?? false;
   if (universe) universe.running = false;
   $('gallery-dialog').showModal();
 }
+
 function setBusy(value) {
   busy = value;
   $('loader').hidden = !value;
@@ -204,11 +321,12 @@ function setBusy(value) {
   document.querySelectorAll('[data-mode]').forEach(button => { button.disabled = value || !universe; });
   $('scene').setAttribute('aria-busy', String(value));
 }
+
 async function importPhotos(files) {
   if (busy || pageDisposed) return;
   galleryAbort?.abort();
+  if (universe?.focusState) universe.closeFocus(true);
   if (universe?.film) { universe.stopFilm(true, false); universe.setFormation('orbit'); }
-  // Close the inner lightbox before its album so the original play state wins.
   if ($('photo-dialog').open) $('photo-dialog').close();
   if ($('gallery-dialog').open) $('gallery-dialog').close();
   for (const dialog of document.querySelectorAll('dialog[open]')) dialog.close();
@@ -216,25 +334,25 @@ async function importPhotos(files) {
   let pendingPhotos;
   let pendingAtlases;
   try {
-    $('loading-text').textContent = files ? '正在整理照片' : '正在打开相册';
+    $('loading-text').textContent = files ? '正在整理照片' : '正在凝聚相册';
     $('loading-progress').value = 0;
     const result = files ? await loadLocalPhotos(files) : await loadDemoPhotos(undefined, { extended: true });
     pendingPhotos = result.photos;
     if (pageDisposed) return;
     if (!pendingPhotos.length) throw new Error('没有可以导入的照片。请选择 JPG、PNG、WebP 等图片；HEIC 请先转为 JPG。');
-    // The CPU-only gallery uses the same decoder, limits and thumbnail budget.
     pendingAtlases = await buildPhotoAtlases(pendingPhotos, ({ loaded, total }) => {
       if (pageDisposed) return;
       $('loading-progress').value = total ? loaded / total * 100 : 0;
-      $('loading-text').textContent = '正在整理 ' + loaded.toLocaleString() + ' / ' + total.toLocaleString();
+      $('loading-text').textContent = '正在显影 ' + loaded.toLocaleString() + ' / ' + total.toLocaleString();
     }, { maxTextureSize: universe?.renderer.capabilities.maxTextureSize, preserveAspect: true });
     if (pageDisposed) return;
     const indices = pendingAtlases.flatMap(atlas => atlas.photoIndices);
     if (!indices.length) throw new Error('这些照片无法解码。请转换为 JPG 或 PNG 后重新导入。');
     const skipped = (result.skipped || 0) + (pendingAtlases.diagnostics?.skippedCount || 0);
     const nextFallbackAtlases = universe ? [] : pendingAtlases;
-    if (universe) universe.setPhotos(pendingPhotos, pendingAtlases, Math.max(SCENE_POSITIONS, indices.length));
-    // No dialog can retain a blob from the album we are about to release.
+    if (universe) {
+      universe.setPhotos(pendingPhotos, pendingAtlases, Math.max(SCENE_POSITIONS, indices.length), { genesis: true });
+    }
     for (const dialog of document.querySelectorAll('dialog[open]')) dialog.close();
     clearGalleryThumbnails();
     $('photo-preview').removeAttribute('src');
@@ -243,7 +361,7 @@ async function importPhotos(files) {
     photos = pendingPhotos;
     fallbackAtlases = nextFallbackAtlases;
     pendingPhotos = null;
-    pendingAtlases = null; // Ownership now belongs to the renderer or fallback album.
+    pendingAtlases = null;
     validPhotoIndices = indices;
     selectedPhoto = 0;
     releasePhotos(oldPhotos);
@@ -252,7 +370,7 @@ async function importPhotos(files) {
     $('collection').setAttribute('aria-label', '浏览相册，' + indices.length.toLocaleString() + ' 张照片');
     $('particle-count').textContent = Math.max(SCENE_POSITIONS, indices.length).toLocaleString() + ' 个照片位置';
     $('gallery-title').textContent = files ? '我的相册' : '精选相册';
-    if (files) toast('已导入 ' + indices.length.toLocaleString() + ' 张' + (skipped ? '，跳过 ' + skipped + ' 个无法读取的文件' : '') + '。照片保留在本地。');
+    if (files) toast('已导入 ' + indices.length.toLocaleString() + ' 张' + (skipped ? '，跳过 ' + skipped + ' 个无法读取的文件' : '') + '。色温光谱已编排。');
     else if (skipped) toast(skipped + ' 张照片暂时无法读取。');
     syncPlaying();
   } catch (error) {
@@ -268,15 +386,21 @@ async function importPhotos(files) {
     }
   }
 }
+
 function showError(message) {
   $('loader').hidden = true;
   $('error-message').textContent = message;
   $('error-card').hidden = false;
 }
+
 function setChromeInert() {
-  const hidden = $('app').classList.contains('clean') || $('app').classList.contains('film-active');
+  const hidden =
+    $('app').classList.contains('clean') ||
+    $('app').classList.contains('film-active') ||
+    $('app').classList.contains('focus-active');
   document.querySelectorAll('.chrome').forEach(element => { element.inert = hidden; });
 }
+
 function showFilmChrome(active) {
   if (active) filmFocus = document.activeElement;
   $('app').classList.toggle('film-active', active);
@@ -285,54 +409,87 @@ function showFilmChrome(active) {
   if (active) $('stop-film').focus({ preventScroll: true });
   else if (filmFocus?.isConnected && !$('app').classList.contains('clean')) filmFocus.focus({ preventScroll: true });
 }
+
+function applyExportFraming() {
+  if (!universe) return;
+  if (exportAspect === '16:9') {
+    $('app').classList.add('export-locked');
+    universe.setExportResolution(1920, 1080);
+  } else if (exportAspect === '9:16') {
+    $('app').classList.add('export-locked');
+    universe.setExportResolution(1080, 1920);
+  }
+}
+
+function restoreExportFraming() {
+  $('app').classList.remove('export-locked');
+  universe?.clearExportResolution();
+}
+
 function playFilm() {
   if (busy || !photos.length || !universe) return;
+  if (universe.focusState) universe.closeFocus(true);
+  scrubbingFilm = false;
+  syncFilmReadout(0);
   showFilmChrome(true);
   $('film-description').textContent = recorder?.state === 'recording' ? '录制中' : '漫游';
   if (inspecting) startProfile();
   universe.startFilm();
 }
+
 function endFilm() {
+  scrubbingFilm = false;
   showFilmChrome(false);
   stopRecording();
+  if (!recorder) restoreExportFraming();
   if (inspecting && profiler.active) finishProfile();
   syncPlaying();
 }
+
 function leaveFilm(returnToOrbit = true) {
   if (!universe?.film) return;
   universe.stopFilm(true, false);
   if (returnToOrbit) universe.setFormation('orbit');
 }
+
 function setRecordingUI(active) {
   $('record').classList.toggle('recording', active);
-  const label = active ? '结束录制' : '录制 30 秒视频';
+  $('app').classList.toggle('recording-active', active);
+  $('film-scrubber').disabled = active;
+  const label = active ? '结束录制' : '录制 30 秒音画视频';
   $('record').setAttribute('aria-label', label);
   $('record').title = label;
   $('record').innerHTML = '<i data-lucide="' + (active ? 'square' : 'download') + '" aria-hidden="true"></i>';
   drawIcons();
 }
+
 function stopRecording() {
   if (recorder?.state !== 'recording') return;
   recorder.stop();
   if (recorder?.state === 'stopping') $('record').setAttribute('aria-label', '正在保存视频');
 }
+
 function downloadRecording({ blob, extension }) {
   if (downloadUrl) URL.revokeObjectURL(downloadUrl);
   downloadUrl = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = downloadUrl;
-  link.download = 'memoria-' + Date.now() + '.' + extension;
+  const suffix = exportAspect === 'auto' ? '' : '-' + exportAspect.replace(':', 'x');
+  link.download = 'memoria' + suffix + '-' + Date.now() + '.' + extension;
   link.click();
-  toast('视频已开始下载。');
+  toast('影院级音画视频已开始下载。');
 }
+
 function recordingFailed(message) {
   recorder = null;
   setRecordingUI(false);
+  restoreExportFraming();
   if (universe?.film) { universe.stopFilm(false, false); universe.setFormation('orbit'); }
   showFilmChrome(false);
   if (inspecting && profiler.active) finishProfile();
   toast(message);
 }
+
 function recordFilm() {
   if (recorder) { leaveFilm(); return; }
   if (busy || !photos.length || !universe) return;
@@ -341,22 +498,29 @@ function recordFilm() {
     toast('当前浏览器无法录制，请使用新版 Chrome、Edge 或 Safari。');
     return;
   }
+  applyExportFraming();
+  const audioTrack = soundscape.createRecordingTrack();
   let started = false;
   recorder = new CanvasRecorder(canvas, {
+    audioTrack,
+    videoBitsPerSecond: CINEMA_VIDEO_BITS_PER_SECOND,
     onStart: () => { started = true; setRecordingUI(true); playFilm(); },
-    onStop: video => { recorder = null; setRecordingUI(false); downloadRecording(video); },
+    onStop: video => { recorder = null; setRecordingUI(false); restoreExportFraming(); downloadRecording(video); },
     onError: error => recordingFailed(started ? '录制失败，请重新尝试。' : '无法启动录制：' + error.message),
   });
   recorder.start();
 }
+
 function togglePlaying() {
   if (!universe || busy) return;
+  if (universe.focusState) { universe.closeFocus(false); return; }
   if (universe.film) leaveFilm();
   universe.running = !universe.running;
   syncPlaying();
 }
+
 function toggleClean() {
-  if (universe?.film) return;
+  if (universe?.film || universe?.focusState) return;
   $('settings-dialog').close();
   const clean = $('app').classList.toggle('clean');
   $('restore-ui').hidden = !clean;
@@ -364,6 +528,7 @@ function toggleClean() {
   if (clean) $('restore-ui').focus({ preventScroll: true });
   else $('settings').focus({ preventScroll: true });
 }
+
 function startProfile() {
   clearTimeout(profileTimer);
   profiler.start();
@@ -372,12 +537,14 @@ function startProfile() {
   lastProfileDisplay = 0;
   profileTimer = setTimeout(finishProfile, 30500);
 }
+
 function finishProfile() {
   clearTimeout(profileTimer);
   const result = profiler.finish();
   $('performance-output').textContent = result.frames + ' 帧 · ' + result.durationSeconds.toFixed(2) + ' 秒\n中位 ' + result.medianFps.toFixed(1) + ' fps\np95 ' + result.p95FrameMs.toFixed(2) + ' ms · 最长 ' + result.maxFrameMs.toFixed(2) + ' ms\n>50ms ' + result.over50ms + ' · >250ms ' + result.over250ms;
   $('performance-output').dataset.report = JSON.stringify(result);
 }
+
 function profileFrame(time) {
   if (!profiler.active) return;
   profiler.push(time);
@@ -386,44 +553,95 @@ function profileFrame(time) {
     lastProfileDisplay = time;
   }
 }
+
+function handleFocusChange({ active, photoIndex, step }) {
+  if (step) {
+    nextPhoto(step);
+    return;
+  }
+  if (active && Number.isInteger(photoIndex) && photos[photoIndex]) {
+    const pos = validPhotoIndices.indexOf(photoIndex);
+    if (pos >= 0) {
+      selectedPhoto = pos;
+      updateFocusCaption(photos[photoIndex], pos);
+    }
+  }
+  $('app').classList.toggle('focus-active', Boolean(active));
+  $('focus-hud').hidden = !active;
+  setChromeInert();
+  if (active) {
+    $('focus-close').focus({ preventScroll: true });
+  } else {
+    soundscape.playFocusPulse(false);
+    syncPlaying();
+    if (focusTrigger?.isConnected && !$('app').classList.contains('clean')) {
+      focusTrigger.focus({ preventScroll: true });
+    }
+    focusTrigger = null;
+  }
+}
+
 function contextLost() {
   recorder?.dispose();
   recorder = null;
   setRecordingUI(false);
+  restoreExportFraming();
   universe?.stopFilm(false, false);
   showFilmChrome(false);
+  $('app').classList.remove('focus-active');
+  $('focus-hud').hidden = true;
   if (profiler.active) finishProfile();
   universe?.dispose();
   universe = null;
   setBusy(false);
   showError('三维渲染已中断。你仍可浏览相册，或重新打开空间。');
 }
+
 try {
   universe = new PhotoUniverse($('scene'), {
     onPick: showPhoto,
-    onModeChange: updateMode,
-    onFilmProgress: seconds => {
-      $('film-time').textContent = '00:' + String(Math.floor(seconds)).padStart(2, '0') + ' / 00:30';
-      $('film-progress').value = seconds;
+    onHoverPhoto: photoIndex => {
+      const key = photos[photoIndex]?.spectralKey ?? 0.5;
+      soundscape.playHoverTick(key);
     },
+    onFocusChange: handleFocusChange,
+    onModeChange: updateMode,
+    onFilmProgress: syncFilmReadout,
     onFilmEnd: endFilm,
     onContextLost: contextLost,
-    onFrame: inspecting ? profileFrame : undefined,
+    onFrame: time => {
+      if (inspecting) profileFrame(time);
+      if (universe) soundscape.update(universe.getAudioModulation());
+    },
   });
   universe.speed = Number($('speed').value);
   syncPlaying();
-} catch { showError('浏览器无法启动三维空间。请开启硬件加速，或使用新版 Chrome / Edge。相册仍可浏览。'); }
+  if (debugEnabled) {
+    window.__memoria = { universe, soundscape };
+  }
+} catch {
+  showError('浏览器无法启动三维空间。请开启硬件加速，或使用新版 Chrome / Edge。相册仍可浏览。');
+}
 importPhotos();
 
 $('import').addEventListener('click', () => $('file-input').click());
 $('file-input').addEventListener('change', event => { if (event.target.files.length) importPhotos(event.target.files); });
+$('sound-toggle').addEventListener('click', () => {
+  soundscape.toggleMuted();
+  syncSoundUI();
+});
 $('retry').addEventListener('click', () => location.reload());
 $('help').addEventListener('click', () => $('help-dialog').showModal());
 $('settings').addEventListener('click', () => $('settings-dialog').showModal());
 $('collection').addEventListener('click', openGallery);
 $('browse-fallback').addEventListener('click', openGallery);
 $('demo').addEventListener('click', () => { $('help-dialog').close(); importPhotos(); });
-$('brand').addEventListener('click', () => { leaveFilm(); if (universe?.mode !== 'orbit') universe?.setFormation('orbit'); else universe?.resetView(false); });
+$('brand').addEventListener('click', () => {
+  if (universe?.focusState) { universe.closeFocus(false); return; }
+  leaveFilm();
+  if (universe?.mode !== 'orbit') universe?.setFormation('orbit');
+  else universe?.resetView(false);
+});
 document.querySelectorAll('.dialog-close').forEach(button => button.addEventListener('click', () => button.closest('dialog').close()));
 document.querySelectorAll('dialog').forEach(dialog => dialog.addEventListener('click', event => {
   if (event.target !== dialog) return;
@@ -431,7 +649,7 @@ document.querySelectorAll('dialog').forEach(dialog => dialog.addEventListener('c
   if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) dialog.close();
 }));
 $('gallery-dialog').addEventListener('close', () => {
-  if (universe) universe.running = galleryPlaying;
+  if (universe && !universe.focusState) universe.running = galleryPlaying;
   clearGalleryThumbnails();
   syncPlaying();
 });
@@ -454,6 +672,9 @@ $('gallery-previous').addEventListener('click', () => { galleryPage--; renderGal
 $('gallery-next').addEventListener('click', () => { galleryPage++; renderGallery(); });
 $('previous-photo').addEventListener('click', () => nextPhoto(-1));
 $('next-photo').addEventListener('click', () => nextPhoto(1));
+$('focus-prev').addEventListener('click', () => nextPhoto(-1));
+$('focus-next').addEventListener('click', () => nextPhoto(1));
+$('focus-close').addEventListener('click', () => universe?.closeFocus(false));
 $('photo-retry').addEventListener('click', () => showPhoto(validPhotoIndices[selectedPhoto]));
 $('photo-stage').addEventListener('pointerdown', event => {
   if (event.pointerType !== 'touch') return;
@@ -472,8 +693,38 @@ $('photo-stage').addEventListener('pointerup', event => {
 document.querySelectorAll('[data-mode]').forEach(button => button.addEventListener('click', () => {
   if (!universe || busy) return;
   leaveFilm(false);
+  soundscape.playFocusPulse(true);
   universe.setFormation(button.dataset.mode);
 }));
+document.querySelectorAll('[data-aspect]').forEach(button => button.addEventListener('click', () => {
+  exportAspect = button.dataset.aspect;
+  document.querySelectorAll('[data-aspect]').forEach(pill => {
+    pill.setAttribute('aria-pressed', String(pill.dataset.aspect === exportAspect));
+  });
+}));
+$('film-scrubber').addEventListener('pointerdown', () => {
+  if (!universe?.film || recorder) return;
+  scrubbingFilm = true;
+  universe.seekFilmLive(Number($('film-scrubber').value), { paused: true });
+});
+$('film-scrubber').addEventListener('input', () => {
+  if (!universe?.film || recorder) return;
+  scrubbingFilm = true;
+  const seconds = Number($('film-scrubber').value);
+  universe.seekFilmLive(seconds, { paused: true });
+  $('film-scrubber').value = String(seconds);
+});
+const finishScrub = () => {
+  if (!scrubbingFilm) return;
+  scrubbingFilm = false;
+  if (universe?.film && !recorder) {
+    universe.seekFilmLive(Number($('film-scrubber').value), { paused: false });
+  }
+};
+$('film-scrubber').addEventListener('pointerup', finishScrub);
+$('film-scrubber').addEventListener('pointercancel', finishScrub);
+$('film-scrubber').addEventListener('change', finishScrub);
+
 $('play').addEventListener('click', togglePlaying);
 $('speed').addEventListener('input', event => { if (universe) universe.speed = Number(event.target.value); });
 $('reset').addEventListener('click', () => { leaveFilm(false); universe?.resetView(false); $('settings-dialog').close(); });
@@ -503,6 +754,11 @@ document.addEventListener('keydown', event => {
     return;
   }
   if (document.querySelector('dialog[open]') || !universe) return;
+  if (universe.focusState) {
+    if (event.key === 'ArrowLeft') { event.preventDefault(); nextPhoto(-1); return; }
+    if (event.key === 'ArrowRight') { event.preventDefault(); nextPhoto(1); return; }
+    if (event.key === 'Escape') { event.preventDefault(); universe.closeFocus(false); return; }
+  }
   if (event.key === 'Escape' && universe.film) { event.preventDefault(); leaveFilm(); return; }
   if (event.target.closest('input,textarea,select')) return;
   if (event.code === 'Space' && !event.target.closest('button,a')) { event.preventDefault(); togglePlaying(); }
@@ -518,21 +774,21 @@ document.addEventListener('drop', event => {
 window.addEventListener('pagehide', event => {
   clearTimeout(profileTimer);
   clearTimeout(toastTimer);
-  // Dispose suppresses onStop, so navigating away cannot download a partial clip.
   recorder?.dispose(); recorder = null;
   setRecordingUI(false);
+  restoreExportFraming();
   if (universe?.film) {
     universe.stopFilm(false, false);
     showFilmChrome(false);
   }
   if (profiler.active) finishProfile();
-  // BFCache restores this same document and its live renderer/Blob URLs.
   if (event.persisted) return;
   pageDisposed = true;
   clearGalleryThumbnails();
   releasePhotos(photos);
   releaseAtlasCanvases(fallbackAtlases);
   fallbackAtlases = [];
+  soundscape.dispose();
   universe?.dispose();
   if (downloadUrl) URL.revokeObjectURL(downloadUrl);
 });
@@ -554,7 +810,6 @@ if (inspecting) {
     showFilmChrome(true);
     $('film-description').textContent = '镜头预览';
     universe.debugSeekFilm(seconds);
-    $('film-time').textContent = '00:' + seconds + ' / 00:30';
-    $('film-progress').value = seconds;
+    syncFilmReadout(seconds);
   }));
 }

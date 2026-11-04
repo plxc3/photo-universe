@@ -1,11 +1,18 @@
 const FPS = 30;
 const VIDEO_BITS_PER_SECOND = 8_000_000;
+export const CINEMA_VIDEO_BITS_PER_SECOND = 18_000_000;
+const AUDIO_BITS_PER_SECOND = 160_000;
 const TIMESLICE_MS = 1000;
 const MIME_CANDIDATES = [
   "video/webm;codecs=vp9",
   "video/webm;codecs=vp8",
   "video/mp4",
   "video/webm",
+];
+const AUDIO_MIME_CANDIDATES = [
+  "video/webm;codecs=vp9,opus",
+  "video/webm;codecs=vp8,opus",
+  ...MIME_CANDIDATES,
 ];
 
 const noop = () => {};
@@ -30,11 +37,16 @@ function attempt(action) {
 }
 
 export class CanvasRecorder {
-  constructor(canvas, { onStart, onStop, onError } = {}) {
+  constructor(canvas, { onStart, onStop, onError, audioTrack = null, fps = FPS, videoBitsPerSecond = VIDEO_BITS_PER_SECOND } = {}) {
     this._canvas = canvas;
     this._onStart = typeof onStart === "function" ? onStart : noop;
     this._onStop = typeof onStop === "function" ? onStop : noop;
     this._onError = typeof onError === "function" ? onError : noop;
+    this._audioTrack = audioTrack || null;
+    this._fps = Number.isFinite(fps) && fps > 0 ? fps : FPS;
+    this._videoBitsPerSecond = Number.isFinite(videoBitsPerSecond) && videoBitsPerSecond > 0
+      ? videoBitsPerSecond
+      : VIDEO_BITS_PER_SECOND;
     this._state = "idle";
     this._stream = null;
     this._recorder = null;
@@ -55,14 +67,15 @@ export class CanvasRecorder {
     );
   }
 
-  static pickMimeType() {
+  static pickMimeType(withAudio = false) {
     if (
       typeof MediaRecorder === "undefined" ||
       typeof MediaRecorder.isTypeSupported !== "function"
     ) {
       return null;
     }
-    for (const type of MIME_CANDIDATES) {
+    const candidates = withAudio ? AUDIO_MIME_CANDIDATES : MIME_CANDIDATES;
+    for (const type of candidates) {
       if (MediaRecorder.isTypeSupported(type)) return type;
     }
     return null;
@@ -93,6 +106,9 @@ export class CanvasRecorder {
     }
     attempt(() => stopTracks(session.stream));
     attempt(() => stopTracks(recorder && recorder.stream));
+    if (session.audioTrack && typeof session.audioTrack.stop === "function") {
+      attempt(() => session.audioTrack.stop());
+    }
     session.chunks = [];
   }
 
@@ -144,23 +160,54 @@ export class CanvasRecorder {
       this._onError(new Error("Canvas is unavailable"));
       return;
     }
-    const mimeType = CanvasRecorder.pickMimeType();
+    const hasAudio = Boolean(this._audioTrack);
+    const mimeType = CanvasRecorder.pickMimeType(hasAudio) || CanvasRecorder.pickMimeType(false);
     if (!mimeType) {
       this._onError(new Error("No supported recording mime type"));
       return;
     }
 
-    const session = { stream: null, recorder: null, chunks: [], mimeType, settled: false, released: false };
+    const session = {
+      stream: null,
+      recorder: null,
+      audioTrack: this._audioTrack,
+      chunks: [],
+      mimeType,
+      settled: false,
+      released: false,
+    };
     this._session = session;
     try {
-      const stream = this._canvas.captureStream(FPS);
+      const stream = this._canvas.captureStream(this._fps);
       session.stream = stream;
       this._stream = stream;
 
-      const recorder = new MediaRecorder(stream, {
-        mimeType,
-        videoBitsPerSecond: VIDEO_BITS_PER_SECOND,
-      });
+      let recorder;
+      if (hasAudio && typeof stream.addTrack === "function") {
+        try {
+          stream.addTrack(this._audioTrack);
+          recorder = new MediaRecorder(stream, {
+            mimeType,
+            videoBitsPerSecond: this._videoBitsPerSecond,
+            audioBitsPerSecond: AUDIO_BITS_PER_SECOND,
+          });
+        } catch {
+          if (typeof stream.removeTrack === "function") {
+            attempt(() => stream.removeTrack(this._audioTrack));
+          }
+          const fallbackMime = CanvasRecorder.pickMimeType(false) || mimeType;
+          session.mimeType = fallbackMime;
+          recorder = new MediaRecorder(stream, {
+            mimeType: fallbackMime,
+            videoBitsPerSecond: this._videoBitsPerSecond,
+          });
+        }
+      } else {
+        recorder = new MediaRecorder(stream, {
+          mimeType,
+          videoBitsPerSecond: this._videoBitsPerSecond,
+        });
+      }
       session.recorder = recorder;
       this._recorder = recorder;
 

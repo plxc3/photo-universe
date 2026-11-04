@@ -3,6 +3,8 @@
  * One atlas cell represents one successfully decoded photo. A renderer can repeat
  * those cells across particles without changing the number of unique photos.
  */
+import { rgbToSpectralKey } from './post.js';
+
 const MAX_PHOTOS = 3000;
 const MAX_FILE_BYTES = 40 * 1024 * 1024;
 const MAX_IMAGE_PIXELS = 100_000_000;
@@ -522,6 +524,35 @@ export async function buildPhotoAtlases(photos, onProgress, options = {}) {
         atlas.slotRects = slotRects;
         atlas.slotSampleRects = slotRects.map(r => Object.freeze({ ...r, x: r.x + 0.5, y: r.y + 0.5, width: Math.max(1, r.width - 1), height: Math.max(1, r.height - 1) }));
         atlas.slotAspects = slotRects.map(r => r.width / r.height);
+      }
+      const finalCtx = canvas.getContext('2d', { alpha: false });
+      if (typeof finalCtx?.getImageData === 'function' && canvas.width > 0 && canvas.height > 0) {
+        try {
+          const { data, width: cw } = finalCtx.getImageData(0, 0, canvas.width, canvas.height);
+          const keys = photoIndices.map((photoIndex, slot) => {
+            const rect = slotRects[slot] || budget.cellRect;
+            const ox = (slot % budget.columns) * budget.cellSize + rect.x;
+            const oy = Math.floor(slot / budget.columns) * budget.cellSize + rect.y;
+            let rSum = 0, gSum = 0, bSum = 0, samples = 0;
+            for (let sy = 0; sy < 5; sy++) {
+              const py = oy + Math.floor(((sy + 0.5) * rect.height) / 5);
+              for (let sx = 0; sx < 5; sx++) {
+                const px = ox + Math.floor(((sx + 0.5) * rect.width) / 5);
+                const idx = (py * cw + px) * 4;
+                rSum += data[idx];
+                gSum += data[idx + 1];
+                bSum += data[idx + 2];
+                samples++;
+              }
+            }
+            const key = samples ? rgbToSpectralKey(rSum / samples, gSum / samples, bSum / samples) : 0.5;
+            photos[photoIndex].spectralKey = key;
+            return key;
+          });
+          atlas.slotSpectralKeys = keys;
+        } catch {
+          // Non-readable or synthetic test contexts fall back cleanly.
+        }
       }
       atlases.push(atlas);
     }

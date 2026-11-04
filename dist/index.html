@@ -4,22 +4,23 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#000000" />
-    <meta name="description" content="Memoria，照片的立体空间。导入你的相册，探索星环与旋转隧道。" />
+    <meta name="description" content="Memoria，照片的立体暗房空间。导入你的相册，在色温星环、螺旋走廊与空间声景中重温记忆。" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="preload" href="/fonts/newsreader-latin-italic-variable.woff2" as="font" type="font/woff2" crossorigin />
     <link rel="preload" href="/fonts/manrope-latin-variable.woff2" as="font" type="font/woff2" crossorigin />
     <title>Memoria — 记忆的形状</title>
-    <script type="module" crossorigin src="/assets/index-BaetHuu7.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/index-CcI5u5me.css">
+    <script type="module" crossorigin src="/assets/index-BFdleWZI.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-Dv6M4ASW.css">
   </head>
   <body>
     <main id="app">
-      <div id="scene" aria-label="三维照片空间。拖动旋转，滚轮或双指缩放，点击照片放大。"></div>
+      <div id="scene" aria-label="三维照片空间。拖动旋转，滚轮或双指缩放，点击照片飞入原位凝视。"></div>
       <header class="topbar chrome">
         <h1 class="brand"><button id="brand" aria-label="Memoria，重置视角">Memoria</button></h1>
         <button id="collection" class="collection-button" aria-label="浏览相册"><i data-lucide="grid-2x2" aria-hidden="true"></i><span id="photo-count" aria-live="polite">正在载入</span></button>
         <div class="top-actions">
           <button class="import-button" id="import"><i data-lucide="plus" aria-hidden="true"></i><span>导入照片</span></button>
+          <button class="icon-button" id="sound-toggle" aria-label="静音空间音效" aria-pressed="true" title="空间音效"><i data-lucide="volume-2" aria-hidden="true"></i></button>
           <button class="icon-button" id="help" aria-label="使用说明" title="使用说明"><i data-lucide="info" aria-hidden="true"></i></button>
         </div>
       </header>
@@ -32,14 +33,35 @@
         <div class="film-actions">
           <button class="icon-button" id="play" aria-label="暂停旋转" title="暂停旋转"><i data-lucide="pause" aria-hidden="true"></i></button>
           <button id="film" class="tour-button"><i data-lucide="play" aria-hidden="true"></i><span>30 秒漫游</span></button>
-          <button id="record" class="icon-button" aria-label="录制 30 秒视频" title="录制 30 秒视频"><i data-lucide="download" aria-hidden="true"></i></button>
+          <button id="record" class="icon-button" aria-label="录制 30 秒音画视频" title="录制 30 秒音画视频"><i data-lucide="download" aria-hidden="true"></i></button>
           <button id="settings" class="icon-button" aria-label="视图设置" title="视图设置"><i data-lucide="sliders-horizontal" aria-hidden="true"></i></button>
         </div>
       </footer>
+      <aside id="focus-hud" class="focus-hud" aria-label="照片原位凝视" hidden>
+        <div class="focus-caption" aria-live="polite" aria-atomic="true">
+          <span id="focus-title"></span>
+          <span id="focus-number"></span>
+        </div>
+        <div class="focus-controls">
+          <button class="icon-button" id="focus-prev" aria-label="上一张照片" title="上一张 (←)"><i data-lucide="arrow-left" aria-hidden="true"></i></button>
+          <button class="icon-button" id="focus-next" aria-label="下一张照片" title="下一张 (→)"><i data-lucide="arrow-right" aria-hidden="true"></i></button>
+          <button class="icon-button" id="focus-close" aria-label="退出凝视" title="退出凝视 (Esc)"><i data-lucide="x" aria-hidden="true"></i></button>
+        </div>
+      </aside>
       <div class="loader" id="loader" role="status"><span class="loader-orbit"></span><span id="loading-text">正在整理照片</span><progress id="loading-progress" max="100" value="0"></progress></div>
-      <div class="drop-target" id="drop-target"><i data-lucide="plus" aria-hidden="true"></i><span>放入你的照片</span><p>最多 3,000 张</p></div>
+      <div class="drop-target" id="drop-target"><i data-lucide="plus" aria-hidden="true"></i><span>放入你的照片</span><p>最多 3,000 张 · 自动按色温光谱编排</p></div>
       <div class="error-card" id="error-card" hidden><h2>暂时无法打开空间</h2><p id="error-message"></p><button class="button" id="retry">重新打开</button><button class="button" id="browse-fallback">浏览相册</button></div>
-      <div class="film-status" id="film-status" hidden><span id="film-description">漫游</span><span id="film-time">00:00 / 00:30</span><button id="stop-film" class="icon-button" aria-label="结束漫游"><i data-lucide="x" aria-hidden="true"></i></button><progress id="film-progress" value="0" max="30"></progress></div>
+      <div class="film-status" id="film-status" hidden>
+        <div class="film-meta">
+          <span id="film-description">漫游</span>
+          <span class="film-dot" aria-hidden="true">·</span>
+          <span id="film-act">序幕 · 星环</span>
+        </div>
+        <span id="film-time">00:00 / 00:30</span>
+        <button id="stop-film" class="icon-button" aria-label="结束漫游"><i data-lucide="x" aria-hidden="true"></i></button>
+        <input id="film-scrubber" class="film-scrubber" type="range" min="0" max="29.65" step="0.02" value="0" aria-label="拖动预览 30 秒漫游进度" />
+        <progress id="film-progress" class="sr-only" value="0" max="30"></progress>
+      </div>
       <div class="toast" id="toast" role="status" hidden></div>
       <button id="restore-ui" class="button" hidden><i data-lucide="eye" aria-hidden="true"></i><span>显示界面</span><kbd>H</kbd></button>
       <input type="file" id="file-input" accept="image/*,.heic,.heif" multiple hidden />
@@ -61,14 +83,22 @@
         <button class="dialog-close icon-button" aria-label="关闭设置"><i data-lucide="x" aria-hidden="true"></i></button>
         <h2 id="settings-title">视图设置</h2>
         <label class="speed-row" for="speed"><span>旋转速度</span><input id="speed" type="range" min="0.2" max="2" value="0.45" step="0.05" aria-label="旋转速度" /></label>
+        <div class="aspect-row" role="group" aria-labelledby="export-aspect-label">
+          <span id="export-aspect-label">录制画幅</span>
+          <div class="aspect-pills" id="export-aspect">
+            <button type="button" data-aspect="auto" aria-pressed="true">窗口</button>
+            <button type="button" data-aspect="16:9" aria-pressed="false">16:9 横屏</button>
+            <button type="button" data-aspect="9:16" aria-pressed="false">9:16 竖屏</button>
+          </div>
+        </div>
         <div class="settings-actions"><button id="reset"><i data-lucide="rotate-ccw" aria-hidden="true"></i>重置视角</button><button id="clean"><i data-lucide="eye-off" aria-hidden="true"></i>隐藏界面<kbd>H</kbd></button><button id="fullscreen"><i data-lucide="maximize" aria-hidden="true"></i><span>进入全屏</span></button></div>
       </dialog>
       <dialog id="help-dialog" aria-labelledby="help-title">
         <button class="dialog-close icon-button" aria-label="关闭说明"><i data-lucide="x" aria-hidden="true"></i></button>
         <h2 id="help-title">慢慢探索。</h2>
-        <p>拖动旋转，滚轮或双指缩放。点击照片放大，也可以从顶部相册浏览。</p>
-        <p>导入或拖入最多 3,000 张照片。照片留在当前浏览器，刷新后恢复精选相册。HEIC 请先转为 JPG。</p>
-        <div class="help-shortcuts"><span><kbd>空格</kbd> 暂停</span><span><kbd>H</kbd> 隐藏界面</span><span><kbd>Esc</kbd> 结束漫游</span></div>
+        <p>拖动旋转，滚轮或双指缩放。点击任意三维照片将飞入它的物理位置原位凝视，按方向键或滑动可在相片间穿梭。</p>
+        <p>导入或拖入最多 3,000 张照片，系统会提取色温并按光谱流向构筑星环与走廊。所有照片仅留在当前浏览器。</p>
+        <div class="help-shortcuts"><span><kbd>空格</kbd> 暂停</span><span><kbd>←</kbd><kbd>→</kbd> 穿梭凝视</span><span><kbd>H</kbd> 隐藏界面</span><span><kbd>Esc</kbd> 退出</span></div>
         <button id="demo" class="button">恢复精选相册</button>
         <div class="help-links"><a href="./editorial/SOURCES.md" target="_blank" rel="noreferrer">摄影来源</a><a href="https://www.douyin.com/video/7692616221573117321" target="_blank" rel="noreferrer">参考作品<i data-lucide="arrow-up-right" aria-hidden="true"></i></a></div>
       </dialog>
