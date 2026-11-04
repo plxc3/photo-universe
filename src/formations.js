@@ -147,7 +147,7 @@ function orbit(count) {
     const rows = Math.max(1, Math.round(Math.sqrt(facetCount * 2.4)));
     const rowWeights = Array.from({ length: rows }, (_, r) => r + 0.85);
     const rowSizes = weightedCounts(facetCount, rowWeights);
-    const scale = Math.max(0.56, Math.min(1.12, 7.6 / Math.sqrt(Math.max(1, facetCount))));
+    const scale = Math.max(0.60, Math.min(1.12, 8.2 / Math.sqrt(Math.max(1, facetCount))));
     const lift = 0.035;
 
     rowSizes.forEach((rowSize, row) => {
@@ -195,7 +195,7 @@ function orbit(count) {
     const radius = RING_RADII[ring];
     const pairCount = Math.max(1, Math.ceil(size / 2));
     const trackSep = size > 1 ? 0.41 : 0;
-    const cardScale = Math.max(0.56, Math.min(0.96, 74 / pairCount));
+    const cardScale = Math.max(0.60, Math.min(0.96, 88 / pairCount));
 
     for (let index = 0; index < size; index++) {
       const pairIndex = Math.floor(index / 2);

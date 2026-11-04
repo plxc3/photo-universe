@@ -13,9 +13,9 @@
 }
 
 :root {
-  --ground: #040407;
-  --surface: #121216;
-  --raised: #1d1d23;
+  --ground: #020204;
+  --surface: #101014;
+  --raised: #1b1b22;
   --text: #f3f0ea;
   --muted: #b5aea6;
   --faint: #847e78;
@@ -124,16 +124,17 @@ svg {
 }
 @media (hover: hover) and (pointer: fine) {
   .cursor-reticle {
+    display: block;
     position: fixed;
     top: 0;
     left: 0;
     z-index: 25;
-    width: 26px;
-    height: 26px;
-    margin: -13px 0 0 -13px;
+    width: 28px;
+    height: 28px;
+    margin: -14px 0 0 -14px;
     pointer-events: none;
     opacity: 0;
-    transition: opacity 0.28s var(--ease-out);
+    transition: opacity 0.24s var(--ease-out);
   }
   .cursor-reticle.visible {
     opacity: 1;
@@ -143,18 +144,68 @@ svg {
     width: 100%;
     height: 100%;
     border-radius: 50%;
-    border: 1px solid rgba(243, 240, 234, 0.22);
-    transition: transform 0.34s var(--ease-out), border-radius 0.34s var(--ease-out), border-color 0.28s ease, background 0.28s ease;
+    border: 1px solid rgba(243, 240, 234, 0.28);
+    transition: transform 0.34s var(--ease-out), border-radius 0.34s var(--ease-out), border-color 0.24s ease, background 0.24s ease;
   }
   .cursor-reticle[data-state='photo'] .reticle-frame {
     transform: scale(1.68);
-    border-radius: 6px;
-    border-color: var(--reticle-accent);
-    background: radial-gradient(circle, rgba(243, 240, 234, 0.06) 0%, transparent 72%);
+    border-radius: 5px;
+    border: 1.5px solid var(--reticle-accent);
+    box-shadow: 0 0 22px rgba(0, 0, 0, 0.72);
+    background: radial-gradient(circle, rgba(243, 240, 234, 0.08) 0%, transparent 72%);
   }
   .cursor-reticle[data-state='ui'] .reticle-frame {
     transform: scale(0.55);
     border-color: rgba(243, 240, 234, 0.12);
+  }
+  .reticle-tag {
+    position: absolute;
+    left: 34px;
+    top: 50%;
+    transform: translate3d(-6px, -50%, 0);
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 4px 11px 4px 9px;
+    background: rgba(10, 10, 14, 0.84);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(243, 240, 234, 0.12);
+    border-radius: 999px;
+    white-space: nowrap;
+    opacity: 0;
+    transition: opacity 0.22s ease, transform 0.28s var(--ease-out);
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.55);
+  }
+  .cursor-reticle[data-state='photo'] .reticle-tag {
+    opacity: 1;
+    transform: translate3d(0, -50%, 0);
+  }
+  .cursor-reticle[data-flip='left'] .reticle-tag {
+    left: auto;
+    right: 34px;
+  }
+  .reticle-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--reticle-accent);
+    box-shadow: 0 0 8px var(--reticle-accent);
+    flex: none;
+  }
+  .reticle-number {
+    font-family: var(--brand);
+    font-style: italic;
+    font-size: 11.5px;
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+  }
+  .reticle-label {
+    font-size: 10.5px;
+    color: var(--muted);
+    max-width: 150px;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 }
 
@@ -431,7 +482,7 @@ svg {
   50% { opacity: 0.45; }
 }
 
-/* Loader, Drop Target, Error & Toast */
+/* Editorial Darkroom Preloader Curtain, Drop Target, Error & Toast */
 .loader {
   position: absolute;
   inset: 0;
@@ -440,24 +491,53 @@ svg {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 20px;
-  background: var(--ground);
+  gap: 14px;
+  background: radial-gradient(circle at 50% 48%, #09080c 0%, var(--ground) 72%);
   font-size: 11px;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.12em;
   color: var(--muted);
 }
+.loader-kicker {
+  font-size: 9.5px;
+  font-weight: 500;
+  letter-spacing: 0.28em;
+  color: var(--faint);
+}
+.loader-pct {
+  font-family: var(--brand);
+  font-style: italic;
+  font-weight: 300;
+  font-size: clamp(54px, 8vw, 92px);
+  line-height: 0.95;
+  letter-spacing: -0.04em;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.loader-rule {
+  width: min(220px, 56vw);
+  height: 1px;
+  background: rgba(243, 240, 234, 0.10);
+  overflow: hidden;
+  position: relative;
+}
+.loader-rule i {
+  display: block;
+  width: var(--load-pct, 8%);
+  height: 100%;
+  background: linear-gradient(90deg, rgba(200, 162, 124, 0.35), var(--accent));
+  transition: width 0.22s var(--ease-out);
+}
 .loader-orbit {
+  display: none;
+}
+#photo-dialog .loader-orbit {
+  display: block;
   width: 28px;
   height: 28px;
   border: 1px solid var(--surface);
   border-top-color: var(--accent);
   border-radius: 50%;
   animation: spin 1.3s linear infinite;
-}
-.loader progress {
-  width: 132px;
-  height: 1.5px;
-  accent-color: var(--accent);
 }
 @keyframes spin {
   to { transform: rotate(360deg); }
@@ -726,6 +806,34 @@ svg {
 #film-act {
   color: var(--accent);
   letter-spacing: 0.03em;
+}
+.film-chapters {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(243, 240, 234, 0.06);
+  border-radius: 999px;
+}
+.film-chapters button {
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: transparent;
+  font-size: 10.5px;
+  color: var(--faint);
+  transition: color 0.2s ease, background 0.2s ease;
+}
+.film-chapters button:hover {
+  color: var(--text);
+}
+.film-chapters button[aria-current='true'] {
+  color: var(--text);
+  background: rgba(200, 162, 124, 0.20);
+}
+.recording-active .film-chapters {
+  pointer-events: none;
+  opacity: 0.45;
 }
 .film-status #film-time {
   font-variant-numeric: tabular-nums;
@@ -1261,6 +1369,9 @@ input[type='range'] {
     padding: 5px 6px 10px 14px;
     white-space: nowrap;
     max-width: calc(100vw - 24px);
+  }
+  .film-chapters {
+    display: none;
   }
   .toast {
     top: 108px;

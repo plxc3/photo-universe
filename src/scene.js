@@ -30,11 +30,11 @@ const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
 // Idle orbit oscillation: group.rotation.x = sin(elapsed * OMEGA) * AMP.
 const OSC_AMP = 0.055;
 const OSC_OMEGA = 0.13;
-const BACKGROUND = '#040407';
-const DEFAULT_MOOD_PRIMARY = '#2c2119';
-const DEFAULT_MOOD_SECONDARY = '#141c2b';
-const TUNNEL_MOOD_PRIMARY = '#1c2638';
-const TUNNEL_MOOD_SECONDARY = '#302019';
+const BACKGROUND = '#020204';
+const DEFAULT_MOOD_PRIMARY = '#2b1e15';
+const DEFAULT_MOOD_SECONDARY = '#121a2b';
+const TUNNEL_MOOD_PRIMARY = '#101826';
+const TUNNEL_MOOD_SECONDARY = '#1f1510';
 const IDLE_RING_RATES = [0.22, -0.17, 0.26, -0.14];
 const RING_AXIS_VECTORS = RING_AXES.map((axis) => new THREE.Vector3(...axis));
 const GAZE_FOV = 42;
@@ -1086,22 +1086,24 @@ export class PhotoUniverse {
       const material = new THREE.MeshBasicMaterial({ map: texture, side: THREE.DoubleSide, color: '#ffffff' });
       material.onBeforeCompile = shader => {
         Object.assign(shader.uniforms, uniforms);
-        const varyings = 'varying vec2 vPaperUv;\nvarying vec3 vPhotoNormal;\nvarying vec3 vViewDir;\nvarying float vPhotoDepth;\nvarying float vHoverLift;\nvarying float vFocusKeep;\n';
+        const varyings = 'varying vec2 vPaperUv;\nvarying vec3 vPhotoNormal;\nvarying vec3 vWorldNormal;\nvarying vec3 vViewDir;\nvarying float vPhotoDepth;\nvarying float vHoverLift;\nvarying float vFocusKeep;\n';
         const vertUniforms = 'uniform vec3 uHoverWorld;\nuniform float uHoverStrength;\nuniform float uFocusAmount;\nuniform vec3 uFocusWorld;\n';
         shader.vertexShader = 'attribute vec4 atlasRect;\n' + vertUniforms + varyings + shader.vertexShader;
         shader.vertexShader = shader.vertexShader.replace('#include <uv_vertex>', '#include <uv_vertex>\n#ifdef USE_MAP\nvMapUv = atlasRect.xy + vMapUv * atlasRect.zw;\n#endif');
         shader.vertexShader = shader.vertexShader.replace('#include <begin_vertex>', `#include <begin_vertex>
           #ifdef USE_INSTANCING
             vec3 cardWorldCenter = (modelMatrix * instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+            vWorldNormal = normalize(mat3(modelMatrix) * mat3(instanceMatrix) * vec3(0.0, 0.0, 1.0));
           #else
             vec3 cardWorldCenter = (modelMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+            vWorldNormal = normalize(mat3(modelMatrix) * vec3(0.0, 0.0, 1.0));
           #endif
           float hoverDist = length(cardWorldCenter - uHoverWorld);
           vHoverLift = uHoverStrength * exp(-(hoverDist * hoverDist) / 16.0);
           vFocusKeep = 1.0 - smoothstep(0.04, 0.20, length(cardWorldCenter - uFocusWorld));
           transformed *= mix(1.0, 1.0 - vFocusKeep, smoothstep(0.02, 0.28, uFocusAmount));
-          transformed.z += vHoverLift * 0.34 * (1.0 - uFocusAmount);
-          transformed.xy *= 1.0 + vHoverLift * 0.045 * (1.0 - uFocusAmount);`);
+          transformed.z += vHoverLift * 0.36 * (1.0 - uFocusAmount);
+          transformed.xy *= 1.0 + vHoverLift * 0.052 * (1.0 - uFocusAmount);`);
         shader.vertexShader = shader.vertexShader.replace('#include <project_vertex>', `#include <project_vertex>
           vPaperUv = uv;
           vPhotoNormal = normalize(normalMatrix * mat3(instanceMatrix) * vec3(0.0, 0.0, 1.0));
@@ -1110,33 +1112,48 @@ export class PhotoUniverse {
         shader.fragmentShader = varyings + 'uniform float uReveal;\nuniform float uDepthNear;\nuniform float uDepthFar;\nuniform float uTunnelMode;\nuniform float uFocusAmount;\nuniform vec3 uPaperBackground;\n' + shader.fragmentShader;
         shader.fragmentShader = shader.fragmentShader.replace('#include <map_fragment>', `#include <map_fragment>
           vec3 n = normalize(vPhotoNormal);
-          if (!gl_FrontFacing) n = -n;
+          vec3 wn = normalize(vWorldNormal);
+          if (!gl_FrontFacing) {
+            n = -n;
+            wn = -wn;
+          }
           vec3 v = normalize(vViewDir);
-          float key = clamp(dot(n, normalize(vec3(-0.36, 0.48, 0.80))), 0.0, 1.0);
-          float fill = clamp(dot(n, normalize(vec3(0.46, -0.32, 0.83))), 0.0, 1.0);
-          vec3 halfVec = normalize(normalize(vec3(-0.24, 0.36, 0.90)) + v);
-          float spec = pow(clamp(dot(n, halfVec), 0.0, 1.0), 30.0) * 0.14;
-          float fresnel = pow(1.0 - abs(dot(n, v)), 3.6) * 0.085;
+
+          // 3-point gallery chiaroscuro gives the 24-facet stellated polyhedron razor-sharp 3D relief
+          float keyLight = clamp(dot(wn, normalize(vec3(-0.48, 0.60, 0.64))), 0.0, 1.0);
+          float rimLight = clamp(dot(wn, normalize(vec3(0.70, 0.22, -0.68))), 0.0, 1.0);
+          float skyFill = clamp(wn.y * 0.5 + 0.5, 0.0, 1.0);
+          vec3 sculptShade = vec3(0.38, 0.40, 0.45)
+            + vec3(0.84, 0.81, 0.76) * pow(keyLight, 1.15)
+            + vec3(0.24, 0.27, 0.34) * pow(rimLight, 1.6)
+            + vec3(0.07, 0.08, 0.10) * skyFill;
+          vec3 activeShade = mix(sculptShade, vec3(1.03, 1.02, 1.00), uTunnelMode);
+
+          vec3 halfVec = normalize(normalize(vec3(-0.30, 0.42, 0.86)) + v);
+          float spec = pow(clamp(dot(n, halfVec), 0.0, 1.0), 42.0) * mix(0.38, 0.14, uTunnelMode);
+          float fresnel = pow(1.0 - abs(dot(n, v)), 3.8) * 0.09;
+
+          // Rich Kodachrome slide chroma & micro-contrast against deep obsidian void
           float luma = dot(diffuseColor.rgb, vec3(0.2126, 0.7152, 0.0722));
-          diffuseColor.rgb = clamp(mix(vec3(luma), diffuseColor.rgb, 1.18) * 1.06, 0.0, 1.0);
-          float shade = 0.76 + 0.24 * key + 0.10 * fill;
-          float backShade = gl_FrontFacing ? 1.0 : 0.82;
+          diffuseColor.rgb = clamp(mix(vec3(luma), diffuseColor.rgb, 1.28) * 1.08, 0.0, 1.15);
+
+          float backShade = gl_FrontFacing ? 1.0 : mix(0.74, 0.88, uTunnelMode);
           float horizonFade = mix(
-            mix(1.0, 0.88, smoothstep(uDepthNear, uDepthFar, vPhotoDepth)),
-            1.0 - smoothstep(42.0, 152.0, vPhotoDepth),
+            mix(1.0, 0.84, smoothstep(uDepthNear, uDepthFar, vPhotoDepth)),
+            1.0 - smoothstep(38.0, 148.0, vPhotoDepth),
             uTunnelMode
           );
-          float focusDim = mix(1.0, mix(0.22, 1.0, vFocusKeep), uFocusAmount);
+          float focusDim = mix(1.0, mix(0.20, 1.0, vFocusKeep), uFocusAmount);
           vec2 edge = min(vPaperUv, vec2(1.0) - vPaperUv);
           float edgeDistance = min(edge.x, edge.y);
-          float bevel = (1.0 - smoothstep(0.008, 0.032, edgeDistance)) * 0.055;
-          diffuseColor.rgb = (diffuseColor.rgb * shade + vec3(spec + fresnel + bevel) * vec3(1.0, 0.97, 0.92)) * backShade * horizonFade;
-          diffuseColor.rgb *= (1.0 + vHoverLift * 0.26 * (1.0 - uFocusAmount)) * focusDim;
+          float bevel = (1.0 - smoothstep(0.008, 0.030, edgeDistance)) * 0.06;
+          diffuseColor.rgb = (diffuseColor.rgb * activeShade + vec3(spec + fresnel + bevel) * vec3(1.0, 0.96, 0.90)) * backShade * horizonFade;
+          diffuseColor.rgb *= (1.0 + vHoverLift * 0.32 * (1.0 - uFocusAmount)) * focusDim;
           float aa = max(0.003, min(fwidth(edgeDistance), 0.014));
           diffuseColor.rgb *= smoothstep(0.0, aa, edgeDistance);
           diffuseColor.rgb = mix(uPaperBackground, diffuseColor.rgb, uReveal);`);
       };
-      material.customProgramCacheKey = () => 'memoria-darkroom-v5';
+      material.customProgramCacheKey = () => 'memoria-darkroom-v6';
       const mesh = new THREE.InstancedMesh(geometry, material, batch.length);
       mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
       mesh.frustumCulled = false;
@@ -1198,6 +1215,7 @@ export class PhotoUniverse {
         instance.quaternion.copy(instance.fromQuaternion);
         instance.scale = instance.fromScale;
         instance.delay = h1 * 0.42;
+        instance.morphSpan = null;
         instance.settled = false;
       });
       this.morph = { elapsed: 0, duration: 2.25, vortex: true, vortexDirection: 1 };
@@ -1263,16 +1281,26 @@ export class PhotoUniverse {
       instance.fromPosition = instance.position.clone();
       instance.fromQuaternion = instance.quaternion.clone();
       instance.fromScale = instance.scale;
+      instance.morphSpan = null;
       if (!duration) {
         instance.delay = 0;
       } else if (vortex) {
         const hash = instance.vortexHash || 0;
         if (vortexDirection > 0) {
-          const radialNorm = clamp(Math.hypot(instance.fromPosition.x, instance.fromPosition.y) / 23.5, 0, 1);
-          instance.delay = ((1 - radialNorm) * 0.16 + hash * 0.06) * duration;
+          // Outer square portal mouth & inner horizon eye lock early; mid-layers swirl as a 3D tornado funnel between them
+          const tunnelMaxZ = TUNNEL_Z_MIN + TUNNEL_SPAN;
+          const targetDepthNorm = clamp((tunnelMaxZ - target.position[2]) / TUNNEL_SPAN, 0, 1);
+          if (targetDepthNorm < 0.14 || targetDepthNorm > 0.86) {
+            instance.delay = hash * 0.04 * duration;
+            instance.morphSpan = duration * 0.38;
+          } else {
+            const midNorm = (targetDepthNorm - 0.14) / 0.72;
+            instance.delay = (0.06 + midNorm * 0.24 + hash * 0.06) * duration;
+            instance.morphSpan = duration - instance.delay;
+          }
         } else {
           const depthNorm = clamp((instance.fromPosition.z - TUNNEL_Z_MIN) / TUNNEL_SPAN, 0, 1);
-          instance.delay = (depthNorm * 0.42 + hash * 0.06) * duration;
+          instance.delay = (depthNorm * 0.40 + hash * 0.06) * duration;
         }
       } else {
         instance.delay = index / Math.max(1, targets.length - 1) * Math.min(0.16, duration * 0.1);
@@ -1682,7 +1710,8 @@ export class PhotoUniverse {
           instance.settled = true;
         } else {
           const delay = instance.delay || 0;
-          const progress = easeInOut((morph.elapsed - delay) / Math.max(1e-6, morph.duration - delay));
+          const span = instance.morphSpan || Math.max(1e-6, morph.duration - delay);
+          const progress = easeInOut(clamp((morph.elapsed - delay) / Math.max(1e-6, span), 0, 1));
           if (vortex) {
             const p0 = instance.fromPosition;
             const p1 = instance.targetPosition;
@@ -1697,17 +1726,21 @@ export class PhotoUniverse {
             const phi0 = Math.atan2(p0.y, p0.x);
             const phi1 = Math.atan2(p1.y, p1.x);
             const dPhi = Math.atan2(Math.sin(phi1 - phi0), Math.cos(phi1 - phi0));
-            const swirl = direction * (1.75 + 0.90 * hash) * impulse;
+            const funnelDepth = clamp((34 - linZ) / 145, 0, 1);
+            const swirl = direction * (2.45 + 1.55 * hash + funnelDepth * 0.9) * impulse;
             const phi = phi0 + dPhi * progress + swirl;
-            const flare = (2.2 + 3.0 * hash) * impulse;
-            const r = THREE.MathUtils.lerp(r0, r1, progress) + flare;
+            const baseR = THREE.MathUtils.lerp(r0, r1, progress);
+            const tornadoR = 5.4 + 9.2 * (1 - funnelDepth) + 2.4 * hash;
+            const r = direction > 0
+              ? Math.max(0.8, THREE.MathUtils.lerp(baseR, tornadoR, impulse * 0.84))
+              : Math.max(0.8, baseR + (1.8 + 2.2 * hash) * impulse);
             instance.position.set(
               THREE.MathUtils.lerp(linX, Math.cos(phi) * r, cylWeight),
               THREE.MathUtils.lerp(linY, Math.sin(phi) * r, cylWeight),
               linZ,
             );
             instance.quaternion.slerpQuaternions(instance.fromQuaternion, instance.targetQuaternion, progress);
-            const halfRoll = swirl * 0.275 * cylWeight;
+            const halfRoll = swirl * 0.34 * cylWeight;
             swirlQuat.set(0, 0, Math.sin(halfRoll), Math.cos(halfRoll));
             instance.quaternion.premultiply(swirlQuat);
           } else {
@@ -1962,7 +1995,7 @@ export class PhotoUniverse {
       const reveal = this.photoUniforms?.uReveal?.value ?? 1;
       au.uTunnelFactor.value = tunnelFactor;
       au.uFocusFactor.value = focusFactor;
-      au.uIntensity.value = (0.38 + focusFactor * 0.24 + tunnelFactor * 0.14) * reveal;
+      au.uIntensity.value = (0.095 + focusFactor * 0.16) * reveal;
 
       const moodSourceIndex = this.focusState
         ? this.focusState.photoIndex
@@ -1973,9 +2006,9 @@ export class PhotoUniverse {
       this.moodPrimaryTarget ||= new THREE.Color(DEFAULT_MOOD_PRIMARY);
       this.moodSecondaryTarget ||= new THREE.Color(DEFAULT_MOOD_SECONDARY);
       if (Array.isArray(moodRgb)) {
-        const scale = this.focusState ? 0.28 : 0.20;
-        this.moodPrimaryTarget.setRGB(moodRgb[0] * scale, moodRgb[1] * scale, moodRgb[2] * scale);
-        this.moodSecondaryTarget.setRGB(moodRgb[2] * 0.12, moodRgb[0] * 0.11, moodRgb[1] * 0.16);
+        const scale = this.focusState ? 0.34 : 0.26;
+        this.moodPrimaryTarget.setRGB(moodRgb[0] * scale, moodRgb[1] * scale, moodRgb[2] * scale, THREE.SRGBColorSpace);
+        this.moodSecondaryTarget.setRGB(moodRgb[2] * 0.16, moodRgb[0] * 0.14, moodRgb[1] * 0.20, THREE.SRGBColorSpace);
       } else if (this.mode === 'tunnel') {
         this.moodPrimaryTarget.set(TUNNEL_MOOD_PRIMARY);
         this.moodSecondaryTarget.set(TUNNEL_MOOD_SECONDARY);

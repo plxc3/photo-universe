@@ -102,10 +102,18 @@ function toast(message) {
 
 function actLabelForTime(seconds) {
   if (seconds < 3.6) return '序幕 · 星环';
-  if (seconds < 5.8) return '第一幕 · 漩涡坍缩';
+  if (seconds < 7.8) return '第一幕 · 漩涡坍缩';
   if (seconds < 21.8) return '第二幕 · 螺旋走廊';
   if (seconds < 25.4) return '第三幕 · 门廊重组';
   return '终章 · 晶格呼吸';
+}
+
+function actIndexForTime(seconds) {
+  if (seconds < 3.6) return 0;
+  if (seconds < 7.8) return 1;
+  if (seconds < 21.8) return 2;
+  if (seconds < 25.4) return 3;
+  return 4;
 }
 
 function syncFilmReadout(seconds) {
@@ -117,6 +125,11 @@ function syncFilmReadout(seconds) {
   if (!scrubbingFilm) {
     $('film-scrubber').value = String(Math.min(29.65, seconds));
   }
+  const activeAct = actIndexForTime(seconds);
+  document.querySelectorAll('[data-act-seek]').forEach((btn, idx) => {
+    if (idx === activeAct) btn.setAttribute('aria-current', 'true');
+    else btn.removeAttribute('aria-current');
+  });
 }
 
 function syncSoundUI() {
@@ -386,13 +399,18 @@ async function importPhotos(files) {
   try {
     $('loading-text').textContent = files ? '正在整理照片' : '正在凝聚相册';
     $('loading-progress').value = 0;
+    if ($('loader-pct')) $('loader-pct').textContent = '00';
+    $('loader').style.setProperty('--load-pct', '6%');
     const result = files ? await loadLocalPhotos(files) : await loadDemoPhotos(undefined, { extended: true });
     pendingPhotos = result.photos;
     if (pageDisposed) return;
     if (!pendingPhotos.length) throw new Error('没有可以导入的照片。请选择 JPG、PNG、WebP 等图片；HEIC 请先转为 JPG。');
     pendingAtlases = await buildPhotoAtlases(pendingPhotos, ({ loaded, total }) => {
       if (pageDisposed) return;
-      $('loading-progress').value = total ? loaded / total * 100 : 0;
+      const pctNum = total ? Math.round((loaded / total) * 100) : 0;
+      $('loading-progress').value = pctNum;
+      if ($('loader-pct')) $('loader-pct').textContent = String(pctNum).padStart(2, '0');
+      $('loader').style.setProperty('--load-pct', Math.max(6, pctNum) + '%');
       $('loading-text').textContent = '正在显影 ' + loaded.toLocaleString() + ' / ' + total.toLocaleString();
     }, { maxTextureSize: universe?.renderer.capabilities.maxTextureSize, preserveAspect: true });
     if (pageDisposed) return;
@@ -703,6 +721,8 @@ function updateReticleFrame() {
   reticleX += (reticleTargetX - reticleX) * 0.28;
   reticleY += (reticleTargetY - reticleY) * 0.28;
   reticleEl.style.transform = `translate3d(${reticleX.toFixed(1)}px, ${reticleY.toFixed(1)}px, 0)`;
+  if (reticleX > window.innerWidth - 240) reticleEl.dataset.flip = 'left';
+  else delete reticleEl.dataset.flip;
 }
 
 try {
@@ -715,8 +735,16 @@ try {
     onHoverStateChange: ({ active, photoIndex }) => {
       if (!reticleEl) return;
       if (active && photos[photoIndex]) {
+        const photo = photos[photoIndex];
         reticleEl.dataset.state = 'photo';
-        reticleEl.style.setProperty('--reticle-accent', photos[photoIndex].accentHex || '#c8a27c');
+        reticleEl.style.setProperty('--reticle-accent', photo.accentHex || '#c8a27c');
+        const pos = validPhotoIndices.indexOf(photoIndex);
+        if ($('reticle-number')) {
+          $('reticle-number').textContent = pos >= 0 ? 'No. ' + String(pos + 1).padStart(2, '0') : '';
+        }
+        if ($('reticle-label')) {
+          $('reticle-label').textContent = photo.source === 'demo' && photo.author ? photo.author : photo.name;
+        }
       } else if (reticleEl.dataset.state === 'photo') {
         delete reticleEl.dataset.state;
       }
@@ -842,6 +870,31 @@ const finishScrub = () => {
 $('film-scrubber').addEventListener('pointerup', finishScrub);
 $('film-scrubber').addEventListener('pointercancel', finishScrub);
 $('film-scrubber').addEventListener('change', finishScrub);
+
+document.querySelectorAll('[data-act-seek]').forEach(button => {
+  button.addEventListener('click', () => {
+    if (!universe?.film || recorder) return;
+    const targetSec = Number(button.dataset.actSeek) || 0;
+    soundscape.playFocusPulse(true);
+    universe.seekFilmLive(targetSec, { paused: false });
+  });
+});
+
+let wheelScrubTimer;
+window.addEventListener('wheel', event => {
+  if (!universe?.film || recorder || document.querySelector('dialog[open]')) return;
+  if (Math.abs(event.deltaY) < 1) return;
+  event.preventDefault();
+  const current = universe.film.elapsed || 0;
+  const next = Math.max(0, Math.min(29.6, current + event.deltaY * 0.012));
+  universe.seekFilmLive(next, { paused: true });
+  clearTimeout(wheelScrubTimer);
+  wheelScrubTimer = setTimeout(() => {
+    if (universe?.film && !recorder && !scrubbingFilm) {
+      universe.seekFilmLive(universe.film.elapsed || next, { paused: false });
+    }
+  }, 220);
+}, { passive: false });
 
 $('play').addEventListener('click', togglePlaying);
 $('speed').addEventListener('input', event => { if (universe) universe.speed = Number(event.target.value); });

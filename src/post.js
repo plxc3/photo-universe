@@ -107,9 +107,9 @@ export function createAtmosphereField() {
   const geometry = new THREE.PlaneGeometry(2, 2);
   const uniforms = {
     uTime: { value: 0 },
-    uPrimaryColor: { value: new THREE.Color('#2c2119') },
-    uSecondaryColor: { value: new THREE.Color('#141c2b') },
-    uIntensity: { value: 0.38 },
+    uPrimaryColor: { value: new THREE.Color('#2b1e15') },
+    uSecondaryColor: { value: new THREE.Color('#121a2b') },
+    uIntensity: { value: 0.085 },
     uTunnelFactor: { value: 0 },
     uFocusFactor: { value: 0 },
   };
@@ -127,6 +127,7 @@ export function createAtmosphereField() {
       }
     `,
     fragmentShader: `
+      precision highp float;
       uniform float uTime;
       uniform vec3 uPrimaryColor;
       uniform vec3 uSecondaryColor;
@@ -143,38 +144,39 @@ export function createAtmosphereField() {
 
       void main() {
         vec2 uv = vUv;
-        float t = uTime * 0.16;
+        float t = uTime * 0.15;
 
         vec2 c1 = vec2(
-          0.50 + sin(t * 0.93) * 0.11 + cos(t * 0.47) * 0.04,
-          0.50 + cos(t * 0.79) * 0.09 + sin(t * 0.61) * 0.03
+          0.50 + sin(t * 0.93) * 0.08 + cos(t * 0.47) * 0.03,
+          0.50 + cos(t * 0.79) * 0.07 + sin(t * 0.61) * 0.02
         );
         vec2 c2 = vec2(
-          0.44 + cos(t * 0.71) * 0.14,
-          0.54 + sin(t * 0.83) * 0.11
+          0.46 + cos(t * 0.71) * 0.10,
+          0.53 + sin(t * 0.83) * 0.08
         );
 
-        float r1 = mix(0.62, 0.76, uFocusFactor);
-        float r2 = mix(0.52, 0.64, uTunnelFactor);
-        float lobe1 = smoothstep(r1, 0.0, distance(uv, c1));
-        float lobe2 = smoothstep(r2, 0.0, distance(uv, c2));
+        float r1 = mix(0.46, 0.64, uFocusFactor);
+        float r2 = mix(0.40, 0.52, uFocusFactor);
+        float lobe1 = pow(smoothstep(r1, 0.0, distance(uv, c1)), 2.8);
+        float lobe2 = pow(smoothstep(r2, 0.0, distance(uv, c2)), 3.0);
 
-        // Center portal depth glow during corridor flight
-        float centerDist = distance(uv, vec2(0.5, 0.5));
-        float portalGlow = smoothstep(0.46, 0.0, centerDist) * uTunnelFactor * 0.32;
+        // Keep true OLED obsidian black (#010103 in sRGB) across outer frame & tunnel abyss
+        float tunnelSuppress = 1.0 - uTunnelFactor * 0.92;
+        float gazeBoost = 1.0 + uFocusFactor * 1.45;
+        float amp = uIntensity * tunnelSuppress * gazeBoost;
 
-        vec3 base = vec3(0.010, 0.010, 0.014);
+        vec3 base = vec3(0.00024, 0.00026, 0.00046);
         vec3 color = base;
-        color = mix(color, uPrimaryColor, (lobe1 * lobe1) * uIntensity);
-        color = mix(color, uSecondaryColor, (lobe2 * lobe2) * (uIntensity * 0.76 + portalGlow));
+        color += uPrimaryColor * (lobe1 * amp);
+        color += uSecondaryColor * (lobe2 * amp * 0.78);
 
-        // Keep outer corners true darkroom obsidian so card fog seamlessly melts in
-        float edgeVignette = smoothstep(0.92, 0.18, centerDist);
-        color *= mix(0.28, 1.0, edgeVignette);
+        float centerDist = distance(uv, vec2(0.5, 0.5));
+        float edgeVignette = smoothstep(0.78, 0.14, centerDist);
+        color *= mix(0.18, 1.0, edgeVignette);
 
-        // Micro-dither eliminates 8-bit banding across ultra-smooth darkroom gradients
-        float dither = (hash12(gl_FragCoord.xy + fract(uTime) * 97.0) - 0.5) / 190.0;
-        gl_FragColor = vec4(clamp(color + dither, 0.0, 1.0), 1.0);
+        // Linear-safe micro-dither prevents 8-bit banding without lifting black floor
+        float dither = (hash12(gl_FragCoord.xy + fract(uTime) * 97.0) - 0.5) * 0.00035;
+        gl_FragColor = vec4(max(vec3(0.0), color + dither), 1.0);
       }
     `,
   });
@@ -326,13 +328,15 @@ export class DarkroomPipeline {
         }
       `,
       fragmentShader: `
+        precision highp float;
         uniform sampler2D tDiffuse;
         uniform vec2 uTexelSize;
         varying vec2 vUv;
         vec3 extractBright(vec3 c) {
           float luma = dot(c, vec3(0.2126, 0.7152, 0.0722));
-          float knee = smoothstep(0.58, 0.96, luma);
-          return c * knee * vec3(1.10, 0.94, 0.82);
+          float knee = smoothstep(0.64, 1.04, luma);
+          vec3 hdrGlint = max(vec3(0.0), c - vec3(0.92)) * 1.45;
+          return (c * knee + hdrGlint) * vec3(1.08, 0.95, 0.84);
         }
         void main() {
           vec2 o = uTexelSize * 2.2;
@@ -358,8 +362,8 @@ export class DarkroomPipeline {
         uTime: { value: 0 },
         uWarp: { value: 0 },
         uFocusBlur: { value: 0 },
-        uHalation: { value: 0.26 },
-        uGrain: { value: 0.014 },
+        uHalation: { value: 0.30 },
+        uGrain: { value: 0.016 },
       },
       depthTest: false,
       depthWrite: false,
@@ -371,6 +375,7 @@ export class DarkroomPipeline {
         }
       `,
       fragmentShader: `
+        precision highp float;
         uniform sampler2D tScene;
         uniform sampler2D tHalation;
         uniform vec2 uSceneTexel;
@@ -387,7 +392,7 @@ export class DarkroomPipeline {
           return fract((p3.x + p3.y) * p3.z);
         }
 
-        // Subtle ACES-inspired filmic shoulder so bright highlights roll off smoothly
+        // Subtle ACES-inspired filmic shoulder so bright HDR glints roll off smoothly
         vec3 filmicShoulder(vec3 x) {
           return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
         }
@@ -429,19 +434,20 @@ export class DarkroomPipeline {
 
           vec3 glow = texture2D(tHalation, vUv).rgb;
           color += glow * (uHalation * (1.0 + uFocusBlur * 0.45));
-          color = mix(color, filmicShoulder(color * 1.06), 0.36);
+          color = mix(clamp(color, 0.0, 1.0), filmicShoulder(color * 1.08), 0.42);
 
           // Optical lens vignette deepens subtly during close-up 3D Gaze
-          float vignette = 1.0 - r2 * mix(0.20, 0.42, uFocusBlur);
+          float vignette = 1.0 - r2 * mix(0.22, 0.46, uFocusBlur);
           color *= vignette;
-
-          // Fine monochrome silver-halide film grain
-          float noise = hash12(gl_FragCoord.xy + fract(uTime * 7.3) * 197.0) - 0.5;
-          float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
-          color += noise * uGrain * (0.35 + 0.65 * smoothstep(0.02, 0.35, luma));
 
           gl_FragColor = vec4(clamp(color, 0.0, 1.0), 1.0);
           #include <colorspace_fragment>
+
+          // Apply silver-halide grain AFTER sRGB conversion & mask out obsidian shadows
+          float srgbLuma = dot(gl_FragColor.rgb, vec3(0.299, 0.587, 0.114));
+          float noise = hash12(gl_FragCoord.xy + fract(uTime * 7.3) * 197.0) - 0.5;
+          float grainMask = smoothstep(0.045, 0.28, srgbLuma) * (1.0 - smoothstep(0.88, 1.0, srgbLuma) * 0.5);
+          gl_FragColor.rgb = clamp(gl_FragColor.rgb + noise * uGrain * grainMask, 0.0, 1.0);
         }
       `,
     });
