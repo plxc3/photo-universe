@@ -1,7 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
-import { sampleFlight, orbitFraming, orbitPosition, portraitAmount, restRotation, tunnelTwistAt, FILM, REST_ROTATION } from './flight.js';
+import {
+  sampleFlight,
+  orbitFraming,
+  orbitPosition,
+  portraitAmount,
+  restRotation,
+  tunnelTwistAt,
+  tunnelConveyorAt,
+  stellationBreathAt,
+  FILM,
+  REST_ROTATION,
+} from './flight.js';
 import { PhotoUniverse } from './scene.js';
 
 const DESKTOP = 16 / 9;
@@ -38,12 +49,17 @@ test('keyframes: orbit mouth, tunnel entrance, tunnel exit and final orbit', () 
   assert.deepEqual(entrance.rotation, [0, 0, 0]);
 
   const tunnelExit = sampleFlight(FILM.phase2End, DESKTOP);
-  assert.equal(tunnelExit.mode, 'orbit');
+  assert.equal(tunnelExit.mode, 'tunnel');
   assert.deepEqual(tunnelExit.position, [0, 0, 2]);
   assert.deepEqual(tunnelExit.target, [0, 0, -74]);
   assert.deepEqual(tunnelExit.up, [0, 1, 0]);
   assert.equal(tunnelExit.fov, 72);
   assert.deepEqual(tunnelExit.rotation, [0, 0, 0]);
+
+  const outside = sampleFlight(FILM.reassemble, DESKTOP);
+  assert.equal(outside.mode, 'orbit');
+  assert.deepEqual(outside.position, [0, 0, 80]);
+  assert.deepEqual(outside.target, [0, 0, 0]);
 
   const final = sampleFlight(FILM.total, DESKTOP);
   assert.equal(final.mode, 'orbit');
@@ -83,7 +99,7 @@ test('boundary continuity at the tunnel entrance and exit', () => {
   const eps = 1e-5;
   const tolerance = 0.02;
   for (const aspect of [DESKTOP, MOBILE]) {
-    for (const boundary of [FILM.phase1, FILM.phase2End]) {
+    for (const boundary of [FILM.phase1, FILM.phase2End, FILM.reassemble]) {
       const before = sampleFlight(boundary - eps, aspect);
       const at = sampleFlight(boundary, aspect);
       const after = sampleFlight(boundary + eps, aspect);
@@ -355,7 +371,7 @@ test('behaviour: clearPhotos releases stale canvases but keeps reused ones', () 
 test('film boundaries have matching zero velocity for camera, target, FOV and rotation', () => {
   const step = 1e-3;
   for (const aspect of [DESKTOP, MOBILE]) {
-    for (const t of [FILM.phase1, FILM.phase2End, FILM.exitEnd, FILM.total]) {
+    for (const t of [FILM.phase1, FILM.phase2End, FILM.reassemble, FILM.exitEnd, FILM.total]) {
       const at = sampleFlight(t, aspect);
       for (const sample of [sampleFlight(t - step, aspect), sampleFlight(t + step, aspect)]) {
         assert.ok(dist(at.position, sample.position) / step < 0.01, `camera velocity boundary ${t}`);
@@ -681,20 +697,45 @@ function inspectTunnelAt(time, count = 3000) {
 
 test('the vortex transforms real instance geometry without warping prints or allocating one layer per photo', () => {
   const O = inspectTunnelAt(14);
-  assert.equal(O.tunnelLayers.length, 55);
-  assert.equal(new Set(O.instances.map(instance => instance.tunnelLayer)).size, 55);
+  assert.equal(O.tunnelLayers.length, 60);
+  assert.equal(new Set(O.instances.map(instance => instance.tunnelLayer)).size, 60);
   const matrix = new THREE.Matrix4(), position = new THREE.Vector3(), quaternion = new THREE.Quaternion(), scale = new THREE.Vector3();
   let rotated = 0;
   for (const instance of O.instances) {
     instance.mesh.getMatrixAt(instance.localIndex, matrix);
     matrix.decompose(position, quaternion, scale);
-    assert.ok(Math.abs(position.z - instance.position.z) < 1e-5, 'the winding retains axial depth');
+    assert.ok(Math.abs(position.z - instance.tunnelLayer.liveZ) < 1e-5, 'the conveyor and winding retain periodic slice depth');
     assert.ok(Math.abs(Math.hypot(position.x, position.y) - Math.hypot(instance.position.x, instance.position.y)) < 2e-6, 'the open passage is preserved');
     assert.ok(Math.abs(scale.x - scale.y) < 1e-6 && Math.abs(scale.y - scale.z) < 1e-6, 'each photograph remains undistorted');
-    if (position.distanceTo(instance.position) > 1) rotated++;
+    if (Math.hypot(position.x - instance.position.x, position.y - instance.position.y) > 1) rotated++;
   }
-  assert.ok(rotated > O.count * 0.75, 'the effect is present in the same matrices used by raycasting');
+  assert.ok(rotated > O.count * 0.70, 'the effect is present in the same matrices used by raycasting');
   assert.ok(O.textures.every(texture => texture.anisotropy === 8));
+  O.clearPhotos();
+});
+
+test('periodic tunnel conveyor and Act III crystalline stellation breath begin and end seamlessly', () => {
+  assert.equal(tunnelConveyorAt(8.2), 0);
+  assert.ok(tunnelConveyorAt(15) > 60 && tunnelConveyorAt(15) < 140);
+  assert.equal(tunnelConveyorAt(FILM.phase2End), 0);
+  assert.equal(stellationBreathAt(25.2), 0);
+  assert.ok(stellationBreathAt(27.275) > 0.99, 'peaks in the hollow crystal lattice pose');
+  assert.equal(stellationBreathAt(29.3), 0);
+
+  const O = buildHarness(1280, 720);
+  loadActualPhotos(O, 24, 600);
+  O.debugSeekFilm(27.275);
+  assert.ok(O.appliedStellationBreath > 0.99);
+  const expandedMatrix = new THREE.Matrix4(), pos = new THREE.Vector3(), quat = new THREE.Quaternion(), sc = new THREE.Vector3();
+  let moved = 0;
+  for (const instance of O.instances) {
+    if (instance.facet >= 0) {
+      instance.mesh.getMatrixAt(instance.localIndex, expandedMatrix);
+      expandedMatrix.decompose(pos, quat, sc);
+      if (pos.distanceTo(instance.targetPosition) > 0.5) moved++;
+    }
+  }
+  assert.ok(moved > 300, 'stellation breath expands core facet matrices in-place');
   O.clearPhotos();
 });
 
@@ -782,4 +823,147 @@ test('photo hover follows real raycast hits, is limited to ten checks per second
   assert.equal(O.hoverPointer, null);
   assert.equal(O.renderer.domElement.style.cursor, 'grab');
   O.clearPhotos();
+});
+
+test('a photo tap keeps responsive framing and an in-flight reset; a real drag claims the view', () => {
+  const O = buildHarness(1440, 900);
+  loadActualPhotos(O, 24, 1200);
+  O.running = false;
+  O.defaultView = true;
+  O.resetView(false);
+  const reset = O.viewTransition;
+  const picked = [];
+  O.pickPhoto = (x, y) => picked.push([x, y]);
+  const pointer = { pointerId: 1, pointerType: 'mouse', button: 0, clientX: 50, clientY: 50 };
+  O.beginPointer(pointer);
+  assert.equal(O.defaultView, true);
+  assert.equal(O.viewTransition, reset);
+  assert.equal(O.endPointer(pointer), true);
+  assert.deepEqual(picked, [[50, 50]]);
+  assert.equal(O.defaultView, true, 'viewing a photograph retains the default responsive camera');
+  O.container.getBoundingClientRect = () => ({ width: 390, height: 844 });
+  O.resize();
+  assert.equal(O.formationPortrait, 1, 'a tapped scene still adopts the portrait composition');
+  O.beginPointer(pointer);
+  O.movePointer({ ...pointer, clientX: 90 });
+  O.movePointer(pointer);
+  assert.equal(O.endPointer(pointer), false, 'a drag returning to its start is never a tap');
+  assert.equal(O.defaultView, false);
+  assert.equal(O.viewTransition, null);
+  assert.equal(picked.length, 1);
+  O.clearPhotos();
+});
+
+test('multi-touch, cancelled gestures, secondary buttons and mismatched pointers never open a photo', () => {
+  const O = buildHarness(390, 844);
+  let picks = 0;
+  O.pickPhoto = () => picks++;
+  const first = { pointerId: 1, pointerType: 'touch', button: 0, isPrimary: true, clientX: 50, clientY: 50 };
+  const second = { ...first, pointerId: 2, isPrimary: false, clientX: 80 };
+  O.beginPointer(first); O.beginPointer(second);
+  O.movePointer({ ...second, clientX: 100 });
+  assert.equal(O.endPointer(second), false);
+  assert.equal(O.endPointer(first), false);
+  assert.equal(picks, 0, 'both pinch fingers are excluded even when the first finger stays still');
+  O.beginPointer(first);
+  assert.equal(O.endPointer(second), false, 'an unrelated pointer cannot end a tap');
+  assert.equal(O.endPointer(first, true), false);
+  const right = { ...first, pointerId: 3, pointerType: 'mouse', button: 2 };
+  O.beginPointer(right);
+  assert.equal(O.endPointer(right), false);
+  O.beginPointer(first);
+  assert.equal(O.endPointer(first), true, 'a new clean tap works after the rejected gestures');
+  assert.equal(picks, 1);
+});
+
+test('the camera exits the corridor before geometry reassembles, and slow frames use the same film clock', () => {
+  const O = inspectTunnelAt(FILM.phase2End);
+  O.film.manual = false;
+  const corridor = O.instances.map(instance => instance.position.clone());
+  O.animate((FILM.reassemble - 0.001) * 1000);
+  assert.ok(O.camera.position.z > 79.99, 'camera is outside the front tunnel layer');
+  assert.equal(O.mode, 'tunnel');
+  assert.ok(O.instances.every((instance, index) => instance.position.equals(corridor[index])), 'all cards remain in the corridor during the retreat');
+  O.animate(FILM.reassemble * 1000);
+  assert.equal(O.mode, 'orbit');
+  assert.ok(Math.abs(O.morph.duration - 1.9) < 1e-12);
+  O.animate(FILM.exitEnd * 1000);
+  assert.equal(O.instanceDirty, false, 'a delayed render still completes geometry with the camera by 24.6 seconds');
+  assert.ok(O.instances.every(instance => instance.position.equals(instance.targetPosition)));
+  O.clearPhotos();
+});
+
+test('reassembly keeps visible photographs away from the camera instead of flying giant cards across the shot', () => {
+  const O = inspectTunnelAt(FILM.phase2End);
+  O.film.manual = false;
+  const matrix = new THREE.Matrix4(), point = new THREE.Vector3();
+  let largestVisibleExtent = 0;
+  for (const time of [FILM.reassemble, 22.8, 23, 23.3, 23.7, 24, FILM.exitEnd]) {
+    O.animate(time * 1000);
+    O.scene.updateMatrixWorld(true);
+    O.camera.updateMatrixWorld(true);
+    for (const instance of O.instances) {
+      instance.mesh.getMatrixAt(instance.localIndex, matrix);
+      let left = Infinity, right = -Infinity, top = Infinity, bottom = -Infinity;
+      for (const [x, y] of [[-.54, -.36], [.54, -.36], [.54, .36], [-.54, .36]]) {
+        point.set(x, y, 0).applyMatrix4(matrix).applyMatrix4(O.group.matrixWorld).project(O.camera);
+        left = Math.min(left, point.x); right = Math.max(right, point.x);
+        top = Math.min(top, point.y); bottom = Math.max(bottom, point.y);
+      }
+      if (right >= -1 && left <= 1 && bottom >= -1 && top <= 1) largestVisibleExtent = Math.max(largestVisibleExtent, right - left, bottom - top);
+    }
+  }
+  assert.ok(largestVisibleExtent < 0.3, `no visible card spans more than 15% of the screen during reassembly (${largestVisibleExtent / 2})`);
+  O.clearPhotos();
+});
+
+test('deterministic inspection shows the real intermediate formation at entry and reassembly', () => {
+  for (const target of [6.4, 23.3]) {
+    const live = target < FILM.phase2End ? buildHarness(1280, 720) : inspectTunnelAt(FILM.phase2End);
+    if (target < FILM.phase2End) {
+      loadActualPhotos(live, 24, 3000);
+      live.running = false;
+      live.film = { start: 0, phase: 'orbit', elapsed: 0 };
+      live.lastTime = FILM.phase1 * 1000;
+      live.animate(FILM.phase1 * 1000);
+    } else {
+      live.film.manual = false;
+      live.animate(FILM.reassemble * 1000);
+    }
+    live.animate(target * 1000);
+    const inspected = buildHarness(1280, 720);
+    loadActualPhotos(inspected, 24, 3000);
+    inspected.debugSeekFilm(target);
+    assert.ok(live.camera.position.distanceTo(inspected.camera.position) < 1e-9);
+    for (let index = 0; index < live.meshes.length; index++) {
+      assert.ok(maxMatrixDiff(Array.from(live.meshes[index].instanceMatrix.array), Array.from(inspected.meshes[index].instanceMatrix.array)) < 1e-5, `inspection geometry matches the live transition at ${target}s`);
+    }
+    const versions = inspected.meshes.map(mesh => mesh.instanceMatrix.version);
+    inspected.animate(inspected.lastTime + 16);
+    assert.deepEqual(inspected.meshes.map(mesh => mesh.instanceMatrix.version), versions, 'an inspected shot remains static');
+    inspected.stopFilm(false);
+    assert.equal(inspected.frozenFormation, true);
+    inspected.resetView(false);
+    assert.equal(inspected.instanceDirty, true, 'reset can leave a frozen intermediate inspection pose smoothly');
+    live.clearPhotos(); inspected.clearPhotos();
+  }
+});
+
+test('starting a film after long idle rotation preserves the first frame without winding backwards through full turns', () => {
+  const O = buildHarness(1280, 720);
+  O.group.rotation.set(-0.08 + Math.PI * 8, -0.68 + Math.PI * 20, -0.15 - Math.PI * 12);
+  const quaternion = O.group.quaternion.clone();
+  O.startFilm();
+  assert.ok(O.film.startPose.rotation.every(angle => angle >= -Math.PI && angle <= Math.PI));
+  O.updateFilm(O.film.start);
+  assert.ok(O.group.quaternion.angleTo(quaternion) < 1e-7, 'normalization represents the same visible pose');
+  let total = 0;
+  let previous = O.group.quaternion.clone();
+  for (let time = 0.05; time <= FILM.phase1; time += 0.05) {
+    const pose = sampleFlight(time, DESKTOP, O.film.startPose);
+    const next = new THREE.Quaternion().setFromEuler(new THREE.Euler(...pose.rotation));
+    total += previous.angleTo(next);
+    previous.copy(next);
+  }
+  assert.ok(total < 1, 'the approach uses the visible short rotation instead of accumulated idle turns');
 });

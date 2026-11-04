@@ -33,6 +33,9 @@ let galleryAbort;
 let photoGeneration = 0;
 let photoRequest;
 let photoPointer;
+let photoFeedbackTimer;
+let photoTransitionTimer;
+const photoPointers = new Set();
 const galleryUrls = new Set();
 const PAGE_SIZE = 24;
 const SCENE_POSITIONS = 3000;
@@ -64,18 +67,27 @@ function showPhoto(index) {
   selectedPhoto = position;
   const photo = photos[index];
   const generation = ++photoGeneration;
+  clearTimeout(photoFeedbackTimer);
   if (photoRequest) photoRequest.src = '';
   const request = photoRequest = new Image();
-  $('photo-preview').hidden = true;
-  $('photo-preview').removeAttribute('src');
+  const hasPhoto = !$('photo-preview').hidden && Boolean($('photo-preview').getAttribute('src'));
   $('photo-stage').setAttribute('aria-busy', 'true');
   $('photo-stage').dataset.state = 'loading';
-  $('photo-feedback').hidden = false;
+  $('photo-stage').classList.toggle('has-photo', hasPhoto);
+  // Keep the last decoded photograph on screen. Fast local/cached switches
+  // never flash an empty stage or a one-frame loading indicator.
+  $('photo-feedback').hidden = hasPhoto;
+  if (hasPhoto) photoFeedbackTimer = setTimeout(() => {
+    if (generation === photoGeneration && $('photo-dialog').open) $('photo-feedback').hidden = false;
+  }, 180);
   $('photo-status').textContent = '正在打开照片';
+  if (document.activeElement === $('photo-retry')) $('next-photo').focus({ preventScroll: true });
   $('photo-retry').hidden = true;
-  $('photo-preview').alt = photo.name;
-  $('photo-title').textContent = photo.source === 'demo' && photo.author ? photo.author : photo.name;
-  $('photo-number').textContent = (position + 1).toLocaleString() + ' / ' + validPhotoIndices.length.toLocaleString();
+  const updateCaption = () => {
+    $('photo-title').textContent = photo.source === 'demo' && photo.author ? photo.author : photo.name;
+    $('photo-number').textContent = (position + 1).toLocaleString() + ' / ' + validPhotoIndices.length.toLocaleString();
+  };
+  if (!hasPhoto) updateCaption();
   if (!$('photo-dialog').open) {
     previousPlaying = universe?.running ?? false;
     if (universe) universe.running = false;
@@ -84,17 +96,35 @@ function showPhoto(index) {
   request.src = photo.url;
   request.decode().then(() => {
     if (generation !== photoGeneration || !$('photo-dialog').open) return;
-    $('photo-preview').src = photo.url;
-    $('photo-preview').hidden = false;
+    clearTimeout(photoFeedbackTimer);
+    clearTimeout(photoTransitionTimer);
+    $('photo-stage').querySelector('.photo-outgoing')?.remove();
+    const previous = $('photo-preview');
+    const interrupted = previous.getAnimations().some(animation => animation.playState === 'running');
+    request.id = 'photo-preview';
+    request.alt = photo.name;
+    request.draggable = false;
+    request.className = interrupted ? 'photo-image photo-swap-instant' : 'photo-image';
+    previous.removeAttribute('id');
+    previous.after(request);
+    if (hasPhoto && !interrupted && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      previous.className = 'photo-outgoing';
+      previous.setAttribute('aria-hidden', 'true');
+      photoTransitionTimer = setTimeout(() => previous.remove(), 260);
+    } else previous.remove();
+    updateCaption();
     $('photo-feedback').hidden = true;
     $('photo-stage').dataset.state = 'ready';
+    $('photo-stage').classList.add('has-photo');
     $('photo-stage').setAttribute('aria-busy', 'false');
     photoRequest = null;
   }).catch(() => {
     if (generation !== photoGeneration || !$('photo-dialog').open) return;
+    clearTimeout(photoFeedbackTimer);
     $('photo-stage').dataset.state = 'error';
     $('photo-stage').setAttribute('aria-busy', 'false');
     $('photo-status').textContent = '这张照片暂时无法打开';
+    $('photo-feedback').hidden = false;
     $('photo-retry').hidden = false;
     photoRequest = null;
   });
@@ -188,7 +218,7 @@ async function importPhotos(files) {
   try {
     $('loading-text').textContent = files ? '正在整理照片' : '正在打开相册';
     $('loading-progress').value = 0;
-    const result = files ? await loadLocalPhotos(files) : await loadDemoPhotos();
+    const result = files ? await loadLocalPhotos(files) : await loadDemoPhotos(undefined, { extended: true });
     pendingPhotos = result.photos;
     if (pageDisposed) return;
     if (!pendingPhotos.length) throw new Error('没有可以导入的照片。请选择 JPG、PNG、WebP 等图片；HEIC 请先转为 JPG。');
@@ -197,7 +227,7 @@ async function importPhotos(files) {
       if (pageDisposed) return;
       $('loading-progress').value = total ? loaded / total * 100 : 0;
       $('loading-text').textContent = '正在整理 ' + loaded.toLocaleString() + ' / ' + total.toLocaleString();
-    }, { maxTextureSize: universe?.renderer.capabilities.maxTextureSize });
+    }, { maxTextureSize: universe?.renderer.capabilities.maxTextureSize, preserveAspect: true });
     if (pageDisposed) return;
     const indices = pendingAtlases.flatMap(atlas => atlas.photoIndices);
     if (!indices.length) throw new Error('这些照片无法解码。请转换为 JPG 或 PNG 后重新导入。');
@@ -407,11 +437,17 @@ $('gallery-dialog').addEventListener('close', () => {
 });
 $('photo-dialog').addEventListener('close', () => {
   photoGeneration++;
+  clearTimeout(photoFeedbackTimer);
+  clearTimeout(photoTransitionTimer);
+  $('photo-stage').querySelector('.photo-outgoing')?.remove();
   if (photoRequest) photoRequest.src = '';
   photoRequest = null;
   photoPointer = null;
+  photoPointers.clear();
   if (universe) universe.running = previousPlaying;
   $('photo-preview').removeAttribute('src');
+  $('photo-preview').hidden = true;
+  $('photo-stage').classList.remove('has-photo');
   syncPlaying();
 });
 $('gallery-previous').addEventListener('click', () => { galleryPage--; renderGallery(); });
@@ -420,10 +456,13 @@ $('previous-photo').addEventListener('click', () => nextPhoto(-1));
 $('next-photo').addEventListener('click', () => nextPhoto(1));
 $('photo-retry').addEventListener('click', () => showPhoto(validPhotoIndices[selectedPhoto]));
 $('photo-stage').addEventListener('pointerdown', event => {
-  if (event.pointerType === 'touch') photoPointer = { x: event.clientX, y: event.clientY, id: event.pointerId };
+  if (event.pointerType !== 'touch') return;
+  photoPointers.add(event.pointerId);
+  photoPointer = photoPointers.size === 1 ? { x: event.clientX, y: event.clientY, id: event.pointerId } : null;
 });
-$('photo-stage').addEventListener('pointercancel', () => { photoPointer = null; });
+$('photo-stage').addEventListener('pointercancel', event => { photoPointers.delete(event.pointerId); photoPointer = null; });
 $('photo-stage').addEventListener('pointerup', event => {
+  photoPointers.delete(event.pointerId);
   if (!photoPointer || photoPointer.id !== event.pointerId) return;
   const dx = event.clientX - photoPointer.x;
   const dy = event.clientY - photoPointer.y;

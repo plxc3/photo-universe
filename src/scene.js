@@ -1,13 +1,37 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { createFormation } from './formations.js';
-import { sampleFlight, orbitFraming, orbitPosition, flightViewOffset, restingViewFractions, easeInOut, portraitAmount, restRotation, tunnelTwistAt, FILM } from './flight.js';
+import {
+  createFormation,
+  RING_AXES,
+  STAR_CORE_A,
+  STAR_EXPANDED_A,
+  TUNNEL_Z_MIN,
+  TUNNEL_SPAN,
+  stellatedFacetRotation,
+} from './formations.js';
+import {
+  sampleFlight,
+  orbitFraming,
+  orbitPosition,
+  flightViewOffset,
+  restingViewFractions,
+  easeInOut,
+  portraitAmount,
+  restRotation,
+  tunnelTwistAt,
+  tunnelConveyorAt,
+  stellationBreathAt,
+  armillarySpinAt,
+  FILM,
+} from './flight.js';
 
 const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
 // Idle orbit oscillation: group.rotation.x = sin(elapsed * OMEGA) * AMP.
 const OSC_AMP = 0.055;
 const OSC_OMEGA = 0.13;
-const BACKGROUND = '#11100f';
+const BACKGROUND = '#000000';
+const IDLE_RING_RATES = [0.22, -0.17, 0.26, -0.14];
+const RING_AXIS_VECTORS = RING_AXES.map((axis) => new THREE.Vector3(...axis));
 
 function shuffledPhotoPool(photos, count) {
   const pool = Array.from({ length: count }, (_, index) => photos[index % photos.length]);
@@ -36,13 +60,28 @@ function shuffledPhotoPool(photos, count) {
   return pool;
 }
 
+function deterministicHash(index) {
+  let x = ((index + 1) * 0x9e3779b1) >>> 0;
+  x ^= x >>> 16;
+  x = Math.imul(x, 0x85ebca6b) >>> 0;
+  x ^= x >>> 13;
+  return (x >>> 0) / 0xffffffff;
+}
+
+function aspectScaleFactors(aspect) {
+  if (!Number.isFinite(aspect) || aspect <= 0) return [1, 1];
+  const ratio = clamp(aspect, 0.68, 1.55) / 1.5;
+  const root = Math.sqrt(ratio);
+  return [clamp(root, 0.70, 1.04), clamp(1 / root, 0.96, 1.32)];
+}
+
 export class PhotoUniverse {
   constructor(container, { onPick, onFilmProgress, onFilmEnd, onModeChange, onContextLost, onFrame } = {}) {
     this.container = container;
     this.callbacks = { onPick, onFilmProgress, onFilmEnd, onModeChange, onContextLost, onFrame };
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(BACKGROUND);
-    this.scene.fog = new THREE.FogExp2(BACKGROUND, 0.0024);
+    this.scene.fog = new THREE.FogExp2(BACKGROUND, 0.0022);
     this.camera = new THREE.PerspectiveCamera(54, 1, 0.08, 600);
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, preserveDrawingBuffer: true, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.8));
@@ -79,9 +118,7 @@ export class PhotoUniverse {
     this._viewH = 0;
     this._tmpVec = new THREE.Vector3();
     this.controls.addEventListener('start', () => {
-      this.defaultView = false;
       this.dragging = true;
-      this.viewTransition = null;
       this.pointerTarget.set(0, 0);
       this.renderer.domElement.style.cursor = 'grabbing';
     });
@@ -103,21 +140,30 @@ export class PhotoUniverse {
       uReveal: { value: 1 },
       uDepthNear: { value: 36 },
       uDepthFar: { value: 110 },
+      uTunnelMode: { value: 0 },
       uPaperBackground: { value: new THREE.Color(BACKGROUND) },
     };
     this.instanceDirty = false; // instances need per-frame matrix recomputation
     this.boundsDirty = false;   // instanced bounding spheres are stale after morph
     this.tunnelTwist = 0;
     this.appliedTunnelTwist = 0;
+    this.tunnelConveyor = 0;
+    this.appliedTunnelConveyor = 0;
+    this.stellationBreath = 0;
+    this.appliedStellationBreath = 0;
+    this.ringAngles = [0, 0, 0, 0];
+    this.appliedRingAngles = [0, 0, 0, 0];
     this.tunnelLayers = [];
     this.frozenFormation = false;
     this.dummy = new THREE.Object3D();
     this.quaternion = new THREE.Quaternion();
     this.euler = new THREE.Euler();
     this.raycaster = new THREE.Raycaster();
-    this.pointerDown = null;
-    this.renderer.domElement.addEventListener('pointerdown', event => { this.pointerDown = [event.clientX, event.clientY]; });
+    this.activePointers = new Map();
+    this.tapGesture = null;
+    this.renderer.domElement.addEventListener('pointerdown', event => this.beginPointer(event));
     this.renderer.domElement.addEventListener('pointermove', event => {
+      this.movePointer(event);
       if (!this.pointerEnabled || this.dragging || this.film || event.buttons || event.pointerType === 'touch') return;
       this.hoverPointer = [event.clientX, event.clientY];
       const rect = this.renderer.domElement.getBoundingClientRect();
@@ -127,28 +173,15 @@ export class PhotoUniverse {
       this.pointerTarget.set(0, 0);
       this.clearHover();
     });
-    this.renderer.domElement.addEventListener('pointercancel', () => {
-      this.pointerDown = null;
+    this.renderer.domElement.addEventListener('pointercancel', event => {
+      this.endPointer(event, true);
       this.pointerTarget.set(0, 0);
       this.clearHover();
     });
-    this.renderer.domElement.addEventListener('pointerup', event => {
-      if (!this.pointerDown || this.film) return;
-      const distance = Math.hypot(event.clientX - this.pointerDown[0], event.clientY - this.pointerDown[1]);
-      this.pointerDown = null;
-      if (distance > 6) return;
-      this.scene.updateMatrixWorld(true);
-      const rect = this.renderer.domElement.getBoundingClientRect();
-      this.raycaster.setFromCamera(new THREE.Vector2((event.clientX - rect.left) / rect.width * 2 - 1, -(event.clientY - rect.top) / rect.height * 2 + 1), this.camera);
-      // Recompute instance bounding spheres only when a morph has moved them,
-      // not on every pick while the scene is settled.
-      if (this.boundsDirty) {
-        for (const mesh of this.meshes) mesh.computeBoundingSphere();
-        this.boundsDirty = false;
-      }
-      const hit = this.raycaster.intersectObjects(this.meshes, false)[0];
-      if (hit?.instanceId !== undefined) this.callbacks.onPick?.(hit.object.userData.photoIndices[hit.instanceId]);
-    });
+    this.renderer.domElement.addEventListener('pointerup', event => this.endPointer(event));
+    this.renderer.domElement.addEventListener('wheel', event => {
+      if (!this.film && this.controls.enabled && event.deltaY) this.claimManualView();
+    }, { passive: true });
     this.resizeObserver = new ResizeObserver(() => this.resize());
     this.resizeObserver.observe(container);
     this.resize();
@@ -270,6 +303,58 @@ export class PhotoUniverse {
     this.idleYawElapsed = 0;
   }
 
+  claimManualView() {
+    this.defaultView = false;
+    this.viewTransition = null;
+  }
+
+  beginPointer(event) {
+    if (this.film) return;
+    const pointers = this.activePointers ||= new Map();
+    pointers.set(event.pointerId, [event.clientX, event.clientY]);
+    if (pointers.size === 1 && event.isPrimary !== false && (event.pointerType === 'touch' || event.button === 0)) {
+      this.tapGesture = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, maxDistance: 0, blocked: false };
+    } else if (this.tapGesture) this.tapGesture.blocked = true;
+  }
+
+  movePointer(event) {
+    const pointers = this.activePointers;
+    if (!pointers?.has(event.pointerId) || this.film) return;
+    const previous = pointers.get(event.pointerId);
+    const moved = Math.hypot(event.clientX - previous[0], event.clientY - previous[1]);
+    pointers.set(event.pointerId, [event.clientX, event.clientY]);
+    const tap = this.tapGesture;
+    if (tap?.pointerId === event.pointerId) tap.maxDistance = Math.max(tap.maxDistance, Math.hypot(event.clientX - tap.x, event.clientY - tap.y));
+    if ((tap?.maxDistance > 6) || (pointers.size > 1 && moved > 0.5)) this.claimManualView();
+  }
+
+  endPointer(event, cancelled = false) {
+    const pointers = this.activePointers;
+    if (!pointers?.has(event.pointerId)) return false;
+    const tap = this.tapGesture;
+    if (tap?.pointerId === event.pointerId) tap.maxDistance = Math.max(tap.maxDistance, Math.hypot(event.clientX - tap.x, event.clientY - tap.y));
+    const picked = !cancelled && !this.film && pointers.size === 1 && tap?.pointerId === event.pointerId && !tap.blocked && tap.maxDistance <= 6;
+    pointers.delete(event.pointerId);
+    if (cancelled && tap) tap.blocked = true;
+    if (!pointers.size) this.tapGesture = null;
+    if (picked) this.pickPhoto(event.clientX, event.clientY);
+    return picked;
+  }
+
+  pickPhoto(clientX, clientY) {
+    this.scene.updateMatrixWorld(true);
+    this.camera.updateMatrixWorld(true);
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    this.hoverNdc.set((clientX - rect.left) / rect.width * 2 - 1, -(clientY - rect.top) / rect.height * 2 + 1);
+    this.raycaster.setFromCamera(this.hoverNdc, this.camera);
+    if (this.boundsDirty) {
+      for (const mesh of this.meshes) mesh.computeBoundingSphere();
+      this.boundsDirty = false;
+    }
+    const hit = this.raycaster.intersectObjects(this.meshes, false)[0];
+    if (hit?.instanceId !== undefined) this.callbacks.onPick?.(hit.object.userData.photoIndices[hit.instanceId]);
+  }
+
   clearHover() {
     this.hoverPointer = null;
     if (this.renderer.domElement) this.renderer.domElement.style.cursor = this.film ? 'default' : this.dragging ? 'grabbing' : 'grab';
@@ -325,6 +410,12 @@ export class PhotoUniverse {
     this.reveal = null;
     this.tunnelTwist = 0;
     this.appliedTunnelTwist = 0;
+    this.tunnelConveyor = 0;
+    this.appliedTunnelConveyor = 0;
+    this.stellationBreath = 0;
+    this.appliedStellationBreath = 0;
+    this.ringAngles = [0, 0, 0, 0];
+    this.appliedRingAngles = [0, 0, 0, 0];
     this.tunnelLayers = [];
     this.frozenFormation = false;
     this.clearHover();
@@ -343,6 +434,9 @@ export class PhotoUniverse {
     this.atlasCanvases = incomingCanvases;
     this.photos = photos;
     this.count = count;
+    if (this.photoUniforms && !this.photoUniforms.uTunnelMode) {
+      this.photoUniforms.uTunnelMode = { value: this.mode === 'tunnel' ? 1 : 0 };
+    }
     const batches = atlases.map(() => []);
     const pool = shuffledPhotoPool(successful, count);
     for (let index = 0; index < count; index++) {
@@ -358,40 +452,57 @@ export class PhotoUniverse {
       this.textures.push(texture);
       const geometry = new THREE.PlaneGeometry(1.08, 0.72);
       const rects = new Float32Array(batch.length * 4);
-      const rect = atlas.cellRect || { x: 2, y: 22, width: 124, height: 84, size: 128 };
+      const fallbackRect = atlas.sampleRect || atlas.cellRect || { x: 2, y: 22, width: 124, height: 84, size: 128 };
       const columns = atlas.columns || 16;
       batch.forEach((entry, localIndex) => {
+        const rect = atlas.slotSampleRects?.[entry.tile] || fallbackRect;
         const col = entry.tile % columns;
         const row = Math.floor(entry.tile / columns);
-        rects.set([(col * rect.size + rect.x) / atlas.canvas.width, 1 - (row * rect.size + rect.y + rect.height) / atlas.canvas.height, rect.width / atlas.canvas.width, rect.height / atlas.canvas.height], localIndex * 4);
+        rects.set([
+          (col * rect.size + rect.x) / atlas.canvas.width,
+          1 - (row * rect.size + rect.y + rect.height) / atlas.canvas.height,
+          rect.width / atlas.canvas.width,
+          rect.height / atlas.canvas.height,
+        ], localIndex * 4);
       });
       geometry.setAttribute('atlasRect', new THREE.InstancedBufferAttribute(rects, 4));
       const material = new THREE.MeshBasicMaterial({ map: texture, side: THREE.DoubleSide, color: '#ffffff' });
       material.onBeforeCompile = shader => {
         Object.assign(shader.uniforms, this.photoUniforms);
-        const varyings = 'varying vec2 vPaperUv;\nvarying vec3 vPhotoNormal;\nvarying float vPhotoDepth;\n';
+        const varyings = 'varying vec2 vPaperUv;\nvarying vec3 vPhotoNormal;\nvarying vec3 vViewDir;\nvarying float vPhotoDepth;\n';
         shader.vertexShader = 'attribute vec4 atlasRect;\n' + varyings + shader.vertexShader;
         shader.vertexShader = shader.vertexShader.replace('#include <uv_vertex>', '#include <uv_vertex>\n#ifdef USE_MAP\nvMapUv = atlasRect.xy + vMapUv * atlasRect.zw;\n#endif');
         shader.vertexShader = shader.vertexShader.replace('#include <project_vertex>', `#include <project_vertex>
           vPaperUv = uv;
           vPhotoNormal = normalize(normalMatrix * mat3(instanceMatrix) * vec3(0.0, 0.0, 1.0));
+          vViewDir = normalize(-mvPosition.xyz);
           vPhotoDepth = -mvPosition.z;`);
-        shader.fragmentShader = varyings + 'uniform float uReveal;\nuniform float uDepthNear;\nuniform float uDepthFar;\nuniform vec3 uPaperBackground;\n' + shader.fragmentShader;
+        shader.fragmentShader = varyings + 'uniform float uReveal;\nuniform float uDepthNear;\nuniform float uDepthFar;\nuniform float uTunnelMode;\nuniform vec3 uPaperBackground;\n' + shader.fragmentShader;
         shader.fragmentShader = shader.fragmentShader.replace('#include <map_fragment>', `#include <map_fragment>
-          float facing = abs(normalize(vPhotoNormal).z);
-          float directional = 0.78 + 0.22 * clamp(dot(normalize(vPhotoNormal), normalize(vec3(-0.35, 0.45, 0.82))), 0.0, 1.0);
-          float depthShade = mix(1.0, 0.90, smoothstep(uDepthNear, uDepthFar, vPhotoDepth));
-          float faceShade = mix(0.88, 1.0, smoothstep(0.15, 0.88, facing)) * directional;
-          float backShade = gl_FrontFacing ? 1.0 : 0.78;
-          diffuseColor.rgb *= depthShade * faceShade * backShade;
+          vec3 n = normalize(vPhotoNormal);
+          if (!gl_FrontFacing) n = -n;
+          vec3 v = normalize(vViewDir);
+          float key = clamp(dot(n, normalize(vec3(-0.36, 0.48, 0.80))), 0.0, 1.0);
+          float fill = clamp(dot(n, normalize(vec3(0.46, -0.32, 0.83))), 0.0, 1.0);
+          vec3 halfVec = normalize(normalize(vec3(-0.24, 0.36, 0.90)) + v);
+          float spec = pow(clamp(dot(n, halfVec), 0.0, 1.0), 28.0) * 0.14;
+          float luma = dot(diffuseColor.rgb, vec3(0.2126, 0.7152, 0.0722));
+          diffuseColor.rgb = clamp(mix(vec3(luma), diffuseColor.rgb, 1.18) * 1.06, 0.0, 1.0);
+          float shade = 0.76 + 0.24 * key + 0.10 * fill;
+          float backShade = gl_FrontFacing ? 1.0 : 0.82;
+          float horizonFade = mix(
+            mix(1.0, 0.88, smoothstep(uDepthNear, uDepthFar, vPhotoDepth)),
+            1.0 - smoothstep(42.0, 152.0, vPhotoDepth),
+            uTunnelMode
+          );
+          diffuseColor.rgb = (diffuseColor.rgb * shade + vec3(spec)) * backShade * horizonFade;
           vec2 edge = min(vPaperUv, vec2(1.0) - vPaperUv);
           float edgeDistance = min(edge.x, edge.y);
-          float aa = min(fwidth(edgeDistance), 0.008);
-          float paper = 1.0 - smoothstep(0.006 - aa, 0.006 + aa, edgeDistance);
-          diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.92, 0.90, 0.86) * depthShade * backShade, paper * 0.62);
+          float aa = max(0.003, min(fwidth(edgeDistance), 0.014));
+          diffuseColor.rgb *= smoothstep(0.0, aa, edgeDistance);
           diffuseColor.rgb = mix(uPaperBackground, diffuseColor.rgb, uReveal);`);
       };
-      material.customProgramCacheKey = () => 'memoria-paper-v2';
+      material.customProgramCacheKey = () => 'memoria-darkroom-v3';
       const mesh = new THREE.InstancedMesh(geometry, material, batch.length);
       mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
       mesh.frustumCulled = false;
@@ -399,7 +510,25 @@ export class PhotoUniverse {
       this.meshes.push(mesh);
       this.group.add(mesh);
       batch.forEach((entry, localIndex) => {
-        this.instances[entry.index] = { mesh, localIndex, position: new THREE.Vector3(), quaternion: new THREE.Quaternion(), scale: 1, targetPosition: new THREE.Vector3(), targetQuaternion: new THREE.Quaternion(), targetScale: 1, settled: false };
+        const slotAspect = atlas.slotAspects?.[entry.tile];
+        const [aspectX, aspectY] = aspectScaleFactors(slotAspect);
+        this.instances[entry.index] = {
+          mesh,
+          localIndex,
+          aspectX,
+          aspectY,
+          vortexHash: deterministicHash(entry.index),
+          position: new THREE.Vector3(),
+          quaternion: new THREE.Quaternion(),
+          scale: 1,
+          targetPosition: new THREE.Vector3(),
+          targetQuaternion: new THREE.Quaternion(),
+          targetScale: 1,
+          ring: -1,
+          facet: -1,
+          breathDelta: null,
+          settled: false,
+        };
       });
     });
     this.setFormation(this.mode, true, false);
@@ -415,6 +544,7 @@ export class PhotoUniverse {
       if (resetCamera) this.resetView(false);
       return;
     }
+    const previousMode = this.mode;
     // Dynamic film geometry is in the matrices used by both rendering and
     // raycasting. Start the next morph from that exact visible geometry.
     this.bakeTunnelPose();
@@ -424,20 +554,44 @@ export class PhotoUniverse {
     this.layoutAspect = this.camera.aspect;
     const targets = createFormation(mode, this.count || 0, portrait);
     const duration = this.reducedMotion ? 0 : (durationOverride ?? 2.2);
+    const vortex = !instant && duration > 0 && (
+      (previousMode === 'orbit' && mode === 'tunnel') ||
+      (previousMode === 'tunnel' && mode === 'orbit')
+    );
+    const vortexDirection = mode === 'tunnel' ? 1 : -1;
     const layers = new Map();
+
     targets.forEach((target, index) => {
       const instance = this.instances[index];
       instance.fromPosition = instance.position.clone();
       instance.fromQuaternion = instance.quaternion.clone();
       instance.fromScale = instance.scale;
-      instance.delay = duration ? index / Math.max(1, targets.length - 1) * Math.min(0.16, duration * 0.1) : 0;
+      if (!duration) {
+        instance.delay = 0;
+      } else if (vortex) {
+        const hash = instance.vortexHash || 0;
+        if (vortexDirection > 0) {
+          const radialNorm = clamp(Math.hypot(instance.fromPosition.x, instance.fromPosition.y) / 23.5, 0, 1);
+          instance.delay = ((1 - radialNorm) * 0.16 + hash * 0.06) * duration;
+        } else {
+          const depthNorm = clamp((instance.fromPosition.z - TUNNEL_Z_MIN) / TUNNEL_SPAN, 0, 1);
+          instance.delay = (depthNorm * 0.42 + hash * 0.06) * duration;
+        }
+      } else {
+        instance.delay = index / Math.max(1, targets.length - 1) * Math.min(0.16, duration * 0.1);
+      }
       instance.targetPosition.fromArray(target.position);
       instance.targetQuaternion.setFromEuler(this.euler.fromArray(target.rotation));
       instance.targetScale = target.scale;
+      instance.ring = Number.isInteger(target.ring) ? target.ring : -1;
+      instance.facet = Number.isInteger(target.facet) ? target.facet : -1;
+      instance.breathDelta = target.breathDelta || null;
       instance.tunnelLayer = null;
       if (mode === 'tunnel') {
         const z = target.position[2];
-        if (!layers.has(z)) layers.set(z, { weight: ((65 - z) / 130) ** 1.6, cos: 1, sin: 0, quaternion: new THREE.Quaternion() });
+        if (!layers.has(z)) {
+          layers.set(z, { baseZ: z, liveZ: z, cos: 1, sin: 0, quaternion: new THREE.Quaternion() });
+        }
         instance.tunnelLayer = layers.get(z);
       }
       if (instant) {
@@ -449,7 +603,11 @@ export class PhotoUniverse {
     });
     this.tunnelLayers = [...layers.values()];
     if (instant) this.writeInstanceMatrices();
-    else { this.instanceDirty = true; this.boundsDirty = true; this.morph = { elapsed: 0, duration }; }
+    else {
+      this.instanceDirty = true;
+      this.boundsDirty = true;
+      this.morph = { elapsed: 0, duration, vortex, vortexDirection };
+    }
     if (resetCamera) {
       this.resetView(instant);
     }
@@ -464,51 +622,128 @@ export class PhotoUniverse {
     this.morph = null;
   }
 
-  // At most 55 sine/cosine/quaternion evaluations per frame, shared by all
-  // 3000 prints in those layers. Every print keeps its real dimensions.
+  hasActiveRingSpin() {
+    const angles = this.ringAngles;
+    return Boolean(angles && (angles[0] || angles[1] || angles[2] || angles[3]));
+  }
+
+  ringSpinChanged() {
+    const a = this.ringAngles || [0, 0, 0, 0];
+    const b = this.appliedRingAngles || [0, 0, 0, 0];
+    return a[0] !== b[0] || a[1] !== b[1] || a[2] !== b[2] || a[3] !== b[3];
+  }
+
+  // Shared layer/facet/ring evaluations keep per-frame uploads sub-millisecond
+  // for all 3000 prints while preserving exact raycastable instance matrices.
   uploadInstanceMatrices() {
     const twist = this.tunnelTwist || 0;
+    const conveyor = this.tunnelConveyor || 0;
+    const breath = this.stellationBreath || 0;
+    const cameraZ = this.camera?.position?.z ?? 57;
+    const portraitScale = 1 + (this.formationPortrait || 0) * 0.33;
+
     for (const layer of this.tunnelLayers || []) {
-      const angle = twist * layer.weight;
+      const wrappedZ = conveyor
+        ? TUNNEL_Z_MIN + THREE.MathUtils.euclideanModulo(layer.baseZ - TUNNEL_Z_MIN + conveyor, TUNNEL_SPAN)
+        : layer.baseZ;
+      layer.liveZ = wrappedZ;
+      const depthAhead = Math.max(0, cameraZ - wrappedZ);
+      const weight = (clamp(depthAhead / 138, 0, 1.35)) ** 1.42;
+      const angle = twist * weight;
       layer.cos = Math.cos(angle);
       layer.sin = Math.sin(angle);
       layer.quaternion.set(0, 0, Math.sin(angle * 0.5), Math.cos(angle * 0.5));
     }
+
+    let facetQuaternions = null;
+    let breathQuat = null;
+    if (breath && this.mode === 'orbit' && !this.instanceDirty) {
+      const expandedA = STAR_CORE_A + (STAR_EXPANDED_A - STAR_CORE_A) * breath;
+      this.euler ||= new THREE.Euler();
+      breathQuat = new THREE.Quaternion().setFromEuler(
+        this.euler.set(0.14 * breath, 0.56 * breath, -0.22 * breath)
+      );
+      facetQuaternions = Array.from({ length: 24 }, (_, f) =>
+        new THREE.Quaternion()
+          .setFromEuler(this.euler.fromArray(stellatedFacetRotation(f, expandedA)))
+          .premultiply(breathQuat)
+      );
+    }
+
+    let ringQuaternions = null;
+    const ringSpinActive = this.mode === 'orbit' && !this.instanceDirty && this.hasActiveRingSpin();
+    if (ringSpinActive) {
+      ringQuaternions = RING_AXIS_VECTORS.map((axis, r) =>
+        new THREE.Quaternion().setFromAxisAngle(axis, this.ringAngles[r] || 0)
+      );
+    }
+
     for (const instance of this.instances) {
       this.dummy.position.copy(instance.position);
       this.dummy.quaternion.copy(instance.quaternion);
-      if (twist && instance.tunnelLayer) {
-        const { cos, sin, quaternion } = instance.tunnelLayer;
+
+      if ((twist || conveyor) && instance.tunnelLayer) {
+        const { liveZ, cos, sin, quaternion } = instance.tunnelLayer;
         const { x, y } = this.dummy.position;
         this.dummy.position.x = x * cos - y * sin;
         this.dummy.position.y = x * sin + y * cos;
-        this.dummy.quaternion.premultiply(quaternion);
+        if (conveyor && !this.instanceDirty) this.dummy.position.z = liveZ;
+        if (twist) this.dummy.quaternion.premultiply(quaternion);
+      } else if (facetQuaternions && instance.facet >= 0 && instance.breathDelta) {
+        this.dummy.position.x += instance.breathDelta[0] * breath;
+        this.dummy.position.y += instance.breathDelta[1] * breath;
+        this.dummy.position.z += instance.breathDelta[2] * breath * portraitScale;
+        this.dummy.position.applyQuaternion(breathQuat);
+        this.dummy.quaternion.copy(facetQuaternions[instance.facet]);
+      } else if (ringQuaternions && instance.ring >= 0) {
+        const rq = ringQuaternions[instance.ring];
+        this.dummy.position.applyQuaternion(rq);
+        this.dummy.quaternion.premultiply(rq);
       }
-      this.dummy.scale.setScalar(instance.scale);
+
+      const s = instance.scale;
+      this.dummy.scale.set(s * (instance.aspectX || 1), s * (instance.aspectY || 1), s);
       this.dummy.updateMatrix();
       instance.mesh.setMatrixAt(instance.localIndex, this.dummy.matrix);
     }
     for (const mesh of this.meshes) mesh.instanceMatrix.needsUpdate = true;
     this.boundsDirty = true;
     this.appliedTunnelTwist = twist;
+    this.appliedTunnelConveyor = conveyor;
+    this.appliedStellationBreath = breath;
+    const ra = this.ringAngles || [0, 0, 0, 0];
+    this.appliedRingAngles = [ra[0], ra[1], ra[2], ra[3]];
   }
 
   // Read the last displayed matrices rather than re-evaluating the effect at
   // a newer clock time. Cancelling, resetting or choosing another formation
   // therefore starts exactly where the user last saw the photographs.
   bakeTunnelPose(freeze = false) {
-    const twisted = Boolean(this.appliedTunnelTwist);
+    const appliedRings = this.appliedRingAngles || [0, 0, 0, 0];
+    const hasRingOffset = Boolean(appliedRings[0] || appliedRings[1] || appliedRings[2] || appliedRings[3]);
+    const dynamic = Boolean(
+      this.appliedTunnelTwist ||
+      this.appliedTunnelConveyor ||
+      this.appliedStellationBreath ||
+      hasRingOffset
+    );
     const wasMorphing = this.instanceDirty;
-    if (twisted) {
+    if (dynamic) {
       for (const instance of this.instances) {
         instance.mesh.getMatrixAt(instance.localIndex, this.dummy.matrix);
         this.dummy.matrix.decompose(instance.position, instance.quaternion, this.dummy.scale);
-        instance.scale = this.dummy.scale.x;
+        instance.scale = this.dummy.scale.x / (instance.aspectX || 1);
       }
     }
     this.tunnelTwist = 0;
     this.appliedTunnelTwist = 0;
-    if (freeze && (twisted || wasMorphing)) {
+    this.tunnelConveyor = 0;
+    this.appliedTunnelConveyor = 0;
+    this.stellationBreath = 0;
+    this.appliedStellationBreath = 0;
+    this.ringAngles = [0, 0, 0, 0];
+    this.appliedRingAngles = [0, 0, 0, 0];
+    if (freeze && (dynamic || wasMorphing)) {
       for (const instance of this.instances) {
         instance.targetPosition.copy(instance.position);
         instance.targetQuaternion.copy(instance.quaternion);
@@ -529,13 +764,13 @@ export class PhotoUniverse {
     this.flushDamping();
     const mobile = orbitFraming(this.camera.aspect, 54).mobile;
     const position = this.mode === 'tunnel'
-      ? [0, 0, 57]
+      ? [0, 0, 48]
       : this.mode === 'helix'
         ? [0, 4, mobile ? 105 : 68]
         : this.mode === 'orbit'
           ? orbitPosition(this.camera.aspect)
           : [0, 6, mobile ? 96 : 62];
-    const target = this.mode === 'tunnel' ? [0, 0, -65] : [0, 0, 0];
+    const target = this.mode === 'tunnel' ? [0, 0, -90] : [0, 0, 0];
     const fov = this.mode === 'tunnel' ? 72 : 54;
     this.controls.minDistance = this.mode === 'tunnel' ? 3 : 8;
     this.heldViewOffset = null;
@@ -573,14 +808,29 @@ export class PhotoUniverse {
       this.pointerCurrent.set(0, 0);
     }
     const view = this.camera.view;
-    const startPose = { position: this.camera.position.toArray(), target: this.controls.target.toArray(), up: this.camera.up.toArray(), fov: this.camera.fov, rotation: [this.group.rotation.x, this.group.rotation.y, this.group.rotation.z] };
-    this.film = { start: performance.now(), phase: 'orbit', elapsed: 0, startPose, startOffset: { x: view?.enabled ? view.offsetX / view.fullWidth : 0, y: view?.enabled ? view.offsetY / view.fullHeight : 0 } };
+    const rotation = [this.group.rotation.x, this.group.rotation.y, this.group.rotation.z]
+      .map(angle => THREE.MathUtils.euclideanModulo(angle + Math.PI, Math.PI * 2) - Math.PI);
+    const startPose = { position: this.camera.position.toArray(), target: this.controls.target.toArray(), up: this.camera.up.toArray(), fov: this.camera.fov, rotation };
+    const startRingAngles = (this.ringAngles || [0, 0, 0, 0]).map(
+      angle => THREE.MathUtils.euclideanModulo(angle + Math.PI, Math.PI * 2) - Math.PI
+    );
+    this.film = {
+      start: performance.now(),
+      phase: 'orbit',
+      elapsed: 0,
+      startPose,
+      startRingAngles,
+      startOffset: { x: view?.enabled ? view.offsetX / view.fullWidth : 0, y: view?.enabled ? view.offsetY / view.fullHeight : 0 },
+    };
     this.clearHover();
+    this.activePointers?.clear();
+    this.tapGesture = null;
     this.heldViewOffset = null;
     this.viewTransition = null;
     this.controls.enabled = false;
     this.pointerTarget?.set(0, 0);
     this.setFormation('orbit', false, false);
+    if (this.morph) this.morph.filmStart = 0;
     if (this.photoUniforms) this.photoUniforms.uReveal.value = 1;
     this.reveal = null;
     this.camera.updateProjectionMatrix();
@@ -603,6 +853,10 @@ export class PhotoUniverse {
     this.flushDamping();
     this.alignIdlePhase();
     if (natural) {
+      this.ringAngles = [0, 0, 0, 0];
+      this.stellationBreath = 0;
+      this.tunnelConveyor = 0;
+      this.tunnelTwist = 0;
       this.heldViewOffset = null;
       this.defaultView = true;
       this.resize();
@@ -631,11 +885,92 @@ export class PhotoUniverse {
     if (this.film.phase !== s.mode) {
       this.film.phase = s.mode;
       // Morph to the new formation without disturbing the cinematic camera.
-      this.setFormation(s.mode, false, false);
+      const start = s.mode === 'tunnel' ? FILM.phase1 : FILM.reassemble;
+      const duration = s.mode === 'tunnel' ? 2.2 : FILM.exitEnd - FILM.reassemble;
+      this.setFormation(s.mode, false, false, duration);
+      if (this.morph) this.morph.filmStart = start;
     }
     this.tunnelTwist = tunnelTwistAt(elapsed);
+    this.tunnelConveyor = tunnelConveyorAt(elapsed);
+    this.stellationBreath = stellationBreathAt(elapsed);
+    const startRings = this.film.startRingAngles || [0, 0, 0, 0];
+    this.ringAngles = [
+      armillarySpinAt(elapsed, 0, startRings[0]),
+      armillarySpinAt(elapsed, 1, startRings[1]),
+      armillarySpinAt(elapsed, 2, startRings[2]),
+      armillarySpinAt(elapsed, 3, startRings[3]),
+    ];
     this.callbacks.onFilmProgress?.(elapsed);
     if (elapsed >= FILM.total) { this.film.natural = true; this.stopFilm(true, false); }
+  }
+
+  updateInstanceTransforms(dt = 0) {
+    const morphing = this.instanceDirty;
+    if (morphing && this.instances.length) {
+      const morph = this.morph;
+      if (morph) {
+        // Camera and formation use the same film clock, so a slow frame does
+        // not leave the geometry behind the already-completed camera move.
+        morph.elapsed = Math.min(morph.duration, this.film && Number.isFinite(morph.filmStart)
+          ? Math.max(0, this.film.elapsed - morph.filmStart)
+          : morph.elapsed + dt);
+      }
+      const done = this.reducedMotion || !morph || morph.elapsed >= morph.duration;
+      const vortex = !done && Boolean(morph?.vortex);
+      const direction = morph?.vortexDirection || 1;
+      const swirlQuat = vortex ? (this._swirlQuat ||= new THREE.Quaternion()) : null;
+
+      for (const instance of this.instances) {
+        if (done) {
+          instance.position.copy(instance.targetPosition);
+          instance.quaternion.copy(instance.targetQuaternion);
+          instance.scale = instance.targetScale;
+          instance.settled = true;
+        } else {
+          const delay = instance.delay || 0;
+          const progress = easeInOut((morph.elapsed - delay) / Math.max(1e-6, morph.duration - delay));
+          if (vortex) {
+            const p0 = instance.fromPosition;
+            const p1 = instance.targetPosition;
+            const impulse = Math.sin(Math.PI * progress) ** 2;
+            const linX = THREE.MathUtils.lerp(p0.x, p1.x, progress);
+            const linY = THREE.MathUtils.lerp(p0.y, p1.y, progress);
+            const linZ = THREE.MathUtils.lerp(p0.z, p1.z, progress);
+            const r0 = Math.hypot(p0.x, p0.y);
+            const r1 = Math.hypot(p1.x, p1.y);
+            const cylWeight = clamp(Math.min(r0, r1) / 1.2, 0, 1);
+            const hash = instance.vortexHash || 0;
+            const phi0 = Math.atan2(p0.y, p0.x);
+            const phi1 = Math.atan2(p1.y, p1.x);
+            const dPhi = Math.atan2(Math.sin(phi1 - phi0), Math.cos(phi1 - phi0));
+            const swirl = direction * (1.75 + 0.90 * hash) * impulse;
+            const phi = phi0 + dPhi * progress + swirl;
+            const flare = (2.2 + 3.0 * hash) * impulse;
+            const r = THREE.MathUtils.lerp(r0, r1, progress) + flare;
+            instance.position.set(
+              THREE.MathUtils.lerp(linX, Math.cos(phi) * r, cylWeight),
+              THREE.MathUtils.lerp(linY, Math.sin(phi) * r, cylWeight),
+              linZ,
+            );
+            instance.quaternion.slerpQuaternions(instance.fromQuaternion, instance.targetQuaternion, progress);
+            const halfRoll = swirl * 0.275 * cylWeight;
+            swirlQuat.set(0, 0, Math.sin(halfRoll), Math.cos(halfRoll));
+            instance.quaternion.premultiply(swirlQuat);
+          } else {
+            instance.position.lerpVectors(instance.fromPosition, instance.targetPosition, progress);
+            instance.quaternion.slerpQuaternions(instance.fromQuaternion, instance.targetQuaternion, progress);
+          }
+          instance.scale = THREE.MathUtils.lerp(instance.fromScale, instance.targetScale, progress);
+        }
+      }
+      if (done) { this.instanceDirty = false; this.morph = null; }
+    }
+    const dynamicDirty =
+      (this.tunnelTwist || 0) !== (this.appliedTunnelTwist || 0) ||
+      (this.tunnelConveyor || 0) !== (this.appliedTunnelConveyor || 0) ||
+      (this.stellationBreath || 0) !== (this.appliedStellationBreath || 0) ||
+      this.ringSpinChanged();
+    if (this.instances.length && (morphing || dynamicDirty)) this.uploadInstanceMatrices();
   }
 
   // Deterministic inspection hook for visual QA; main.js exposes it only with ?debug=1.
@@ -647,20 +982,47 @@ export class PhotoUniverse {
     const now = performance.now();
     this.film.start = now - target * 1000;
     const sample = sampleFlight(target, this.camera.aspect, this.film.startPose);
-    this.setFormation(sample.mode, true, false);
-    this.film.phase = sample.mode;
-    this.film.manual = true;
-    this.film.elapsed = target;
-    this.tunnelTwist = tunnelTwistAt(target);
-    this.writeInstanceMatrices();
     this.camera.position.fromArray(sample.position);
     this.camera.up.fromArray(sample.up);
     this.camera.fov = sample.fov;
     this.controls.target.fromArray(sample.target);
     this.camera.lookAt(this.controls.target);
     this.group.rotation.set(sample.rotation[0], sample.rotation[1], sample.rotation[2]);
+    let formationStart = null;
+    let duration = 2.2;
+    if (target >= FILM.phase1 && target < FILM.phase1 + duration) {
+      formationStart = FILM.phase1;
+      this.setFormation('orbit', true, false);
+    } else if (target >= FILM.reassemble && target < FILM.exitEnd) {
+      formationStart = FILM.reassemble;
+      duration = FILM.exitEnd - FILM.reassemble;
+      this.setFormation('tunnel', true, false);
+    }
+    this.setFormation(sample.mode, formationStart === null, false, duration);
+    if (this.morph) this.morph.filmStart = formationStart;
+    this.film.phase = sample.mode;
+    this.film.manual = true;
+    this.film.elapsed = target;
+    this.tunnelTwist = tunnelTwistAt(target);
+    this.tunnelConveyor = tunnelConveyorAt(target);
+    this.stellationBreath = stellationBreathAt(target);
+    this.ringAngles = [
+      armillarySpinAt(target, 0, 0),
+      armillarySpinAt(target, 1, 0),
+      armillarySpinAt(target, 2, 0),
+      armillarySpinAt(target, 3, 0),
+    ];
+    this.updateInstanceTransforms(0);
+    if (formationStart !== null) {
+      this.instanceDirty = false;
+      this.morph = null;
+      this.frozenFormation = true;
+    }
     this.camera.updateProjectionMatrix();
     this.applyViewOffset();
+    if (this.photoUniforms?.uTunnelMode) {
+      this.photoUniforms.uTunnelMode.value = this.mode === 'tunnel' ? 1 : 0;
+    }
     this.renderer.render(this.scene, this.camera);
     this.callbacks.onFrame?.(now);
   }
@@ -690,13 +1052,18 @@ export class PhotoUniverse {
       }
       else if (this.running) {
         this.elapsed += dt * this.speed;
-        if (this.mode === 'tunnel') this.group.rotation.z += dt * this.speed * 0.035;
-        else {
+        if (this.mode === 'tunnel') {
+          this.group.rotation.z += dt * this.speed * 0.035;
+        } else {
           const portrait = this.mode === 'orbit' ? (this.formationPortrait || 0) : 0;
           this.idleYawElapsed = (this.idleYawElapsed || 0) + dt * this.speed;
-          this.group.rotation.y += dt * this.speed * (0.055 * (1 - portrait) + 0.012 * portrait * Math.cos(this.idleYawElapsed * 0.2));
+          this.group.rotation.y += dt * this.speed * (0.085 * (1 - portrait) + 0.018 * portrait * Math.cos(this.idleYawElapsed * 0.2));
           this.idleTiltOffset = (this.idleTiltOffset || 0) * Math.exp(-dt * 1.5);
           this.group.rotation.x = (this.idleBaseTilt || 0) + Math.sin(this.elapsed * OSC_OMEGA) * OSC_AMP + this.idleTiltOffset;
+          if (this.mode === 'orbit' && !this.instanceDirty && !this.reducedMotion && this.instances.length) {
+            const current = this.ringAngles || [0, 0, 0, 0];
+            this.ringAngles = current.map((angle, r) => angle + dt * this.speed * IDLE_RING_RATES[r]);
+          }
         }
       }
       this.controls.update();
@@ -713,39 +1080,22 @@ export class PhotoUniverse {
       const distance = this.camera.position.distanceTo(this.controls.target);
       this.photoUniforms.uDepthNear.value = distance * 0.70;
       this.photoUniforms.uDepthFar.value = distance * 1.30;
+      if (this.photoUniforms.uTunnelMode) {
+        const targetTunnel = this.mode === 'tunnel' ? 1 : 0;
+        this.photoUniforms.uTunnelMode.value = this.reducedMotion
+          ? targetTunnel
+          : THREE.MathUtils.lerp(this.photoUniforms.uTunnelMode.value, targetTunnel, 1 - Math.exp(-dt * 4));
+      }
       if (this.reveal) {
         this.reveal.elapsed = Math.min(this.reveal.duration, this.reveal.elapsed + dt);
         this.photoUniforms.uReveal.value = easeInOut(this.reveal.elapsed / this.reveal.duration);
         if (this.reveal.elapsed === this.reveal.duration) this.reveal = null;
       }
-      const density = this.mode === 'tunnel' ? 0.0045 : 0.0012;
+      const density = this.mode === 'tunnel' ? 0.0042 : 0.0010;
       this.scene.fog.density = THREE.MathUtils.lerp(this.scene.fog.density, density, 1 - Math.exp(-dt * 3));
     }
-    // A fixed 2.2s eased morph has zero starting/ending velocity, remains active
-    // while rotation is paused, and performs its final GPU upload exactly once.
-    const morphing = this.instanceDirty;
-    if (morphing && this.instances.length) {
-      const morph = this.morph;
-      if (morph) morph.elapsed = Math.min(morph.duration, morph.elapsed + dt);
-      const done = this.reducedMotion || !morph || morph.elapsed >= morph.duration;
-      for (const instance of this.instances) {
-        if (done) {
-          instance.position.copy(instance.targetPosition);
-          instance.quaternion.copy(instance.targetQuaternion);
-          instance.scale = instance.targetScale;
-          instance.settled = true;
-        } else {
-          const progress = easeInOut((morph.elapsed - instance.delay) / (morph.duration - instance.delay));
-          instance.position.lerpVectors(instance.fromPosition, instance.targetPosition, progress);
-          instance.quaternion.slerpQuaternions(instance.fromQuaternion, instance.targetQuaternion, progress);
-          instance.scale = THREE.MathUtils.lerp(instance.fromScale, instance.targetScale, progress);
-        }
-      }
-      if (done) { this.instanceDirty = false; this.morph = null; }
-    }
-    // Film twist is an actual geometry transform, so picking and the picture
-    // agree. Once both morph and effect settle, no matrices are uploaded.
-    if (this.instances.length && (morphing || (this.tunnelTwist || 0) !== (this.appliedTunnelTwist || 0))) this.uploadInstanceMatrices();
+    // Group/camera motion needs no instance uploads once a morph/effect settles.
+    this.updateInstanceTransforms(dt);
     this.updateHover(time);
     this.renderer.render(this.scene, this.camera);
     this.callbacks.onFrame?.(time);
