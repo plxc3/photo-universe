@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
-import { rgbToSpectralKey, createDustField } from './post.js';
+import { rgbToSpectralKey, extractPhotoMood, createAtmosphereField, createDustField } from './post.js';
 import { SpatialSoundscape } from './audio.js';
 import { CanvasRecorder, CINEMA_VIDEO_BITS_PER_SECOND } from './recording.js';
 import { PhotoUniverse, chromaticPhotoPool } from './scene.js';
@@ -193,6 +193,27 @@ test('createDustField builds additive 3D dust motes and disposes GPU buffers cle
   assert.equal(disposed, 2);
 });
 
+test('extractPhotoMood derives luminous gallery swatches and createAtmosphereField disposes cleanly', () => {
+  const amber = extractPhotoMood(228, 168, 54);
+  const cobalt = extractPhotoMood(32, 88, 224);
+  const silver = extractPhotoMood(140, 140, 140);
+  assert.match(amber.accentHex, /^#[0-9a-f]{6}$/);
+  assert.match(cobalt.accentHex, /^#[0-9a-f]{6}$/);
+  assert.notEqual(amber.accentHex, cobalt.accentHex);
+  assert.ok(amber.toneLabel.includes('AMBER'));
+  assert.ok(cobalt.toneLabel.includes('COBALT'));
+  assert.equal(silver.toneLabel, '银盐 · SILVER');
+
+  const atmo = createAtmosphereField();
+  assert.equal(atmo.mesh.renderOrder, -10);
+  assert.equal(atmo.mesh.material.depthWrite, false);
+  let disposed = 0;
+  atmo.mesh.geometry.addEventListener('dispose', () => disposed++);
+  atmo.mesh.material.addEventListener('dispose', () => disposed++);
+  atmo.dispose();
+  assert.equal(disposed, 2);
+});
+
 test('SpatialSoundscape synthesizes Web Audio nodes, modulates state, clones export track, and disposes cleanly', () => {
   const sound = new SpatialSoundscape({ AudioContextClass: FakeAudioContext });
   assert.equal(sound.isSupported(), true);
@@ -296,15 +317,23 @@ test('PhotoUniverse supports 2.25s stardust genesis, 3D in-situ camera gaze, liv
   const O = makeSceneHarness(1440, 900);
   const photos = Array.from({ length: 24 }, (_, i) => ({
     index: i,
-    spectralKey: i / 24,
+    spectralKey: i < 16 ? (i / 16) * 0.92 : 1.08,
+    moodRgb: [0.8, 0.5, 0.3],
+    width: i % 2 === 0 ? 1200 : 900,
+    height: i % 2 === 0 ? 800 : 1200,
   }));
   const atlases = [{
     canvas: { width: 2048, height: 2048 },
     photoIndices: Array.from({ length: 24 }, (_, i) => i),
   }];
 
-  // 1) Stardust Genesis ritual (`{ genesis: true }`) starts dispersed and converges in 2.25s.
-  O.setPhotos(photos, atlases, 240, { genesis: true });
+  // 1) Stardust Genesis ritual (`{ genesis: true }`) starts dispersed and converges in 2.25s,
+  //    weaving chromatic waves so outer orbital rings also carry saturated photographs.
+  O.setPhotos(photos, atlases, 3000, { genesis: true });
+  const ringColored = O.instances
+    .slice(1680, 3000)
+    .filter((inst) => photos[inst.mesh.userData.photoIndices[inst.localIndex]].spectralKey < 1.0).length;
+  assert.ok(ringColored > 600, 'outer armillary orbital rings carry full-spectrum color alongside core facets');
   assert.equal(O.instanceDirty, true);
   assert.equal(O.morph.duration, 2.25);
   assert.ok(!O.instances[0].position.equals(O.instances[0].targetPosition), 'cards begin in dispersed stardust nebula');
@@ -320,10 +349,13 @@ test('PhotoUniverse supports 2.25s stardust genesis, 3D in-situ camera gaze, liv
   assert.equal(O.focusPhoto(5, 5), true);
   assert.ok(O.focusState);
   assert.equal(O.meshes.length, meshCountBefore, 'hero plate never pollutes instanced raycast meshes');
-  assert.ok(O.focusPlate, 'hero plate is mounted in scene');
+  assert.ok(O.focusPlate, 'hero plate is mounted in overlay scene');
+  assert.ok(O.focusOverlayScene?.children.includes(O.focusPlate), 'hero plate renders in crisp post-bokeh overlay scene');
+  assert.ok(O.focusPlate.userData.frameMat, 'museum archival mat border shader is attached');
   for (let t = 2350; t <= 3500; t += 50) O.animate(t);
   assert.equal(O.camera.fov, 42);
   assert.ok(O.photoUniforms.uFocusAmount.value > 0.95, 'surrounding cards dim via shader uniform');
+  assert.ok(O.focusPlate.scale.y > O.focusPlate.scale.x, 'portrait photograph expands to native portrait aspect');
   assert.ok(O.controls.target.distanceTo(O.focusState.heroPos) < 1e-4, 'camera gazes directly at levitated 3D hero card');
   assert.ok(O.focusPlate.position.distanceTo(O.focusState.heroPos) < 1e-4, 'hero plate levitates smoothly out of facet');
 

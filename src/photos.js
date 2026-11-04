@@ -3,7 +3,7 @@
  * One atlas cell represents one successfully decoded photo. A renderer can repeat
  * those cells across particles without changing the number of unique photos.
  */
-import { rgbToSpectralKey } from './post.js';
+import { extractPhotoMood } from './post.js';
 
 const MAX_PHOTOS = 3000;
 const MAX_FILE_BYTES = 40 * 1024 * 1024;
@@ -545,9 +545,16 @@ export async function buildPhotoAtlases(photos, onProgress, options = {}) {
                 samples++;
               }
             }
-            const key = samples ? rgbToSpectralKey(rSum / samples, gSum / samples, bSum / samples) : 0.5;
-            photos[photoIndex].spectralKey = key;
-            return key;
+            if (samples) {
+              const mood = extractPhotoMood(rSum / samples, gSum / samples, bSum / samples);
+              photos[photoIndex].spectralKey = mood.spectralKey;
+              photos[photoIndex].accentHex = mood.accentHex;
+              photos[photoIndex].moodRgb = mood.moodRgb;
+              photos[photoIndex].toneLabel = mood.toneLabel;
+              return mood.spectralKey;
+            }
+            photos[photoIndex].spectralKey = 0.5;
+            return 0.5;
           });
           atlas.slotSpectralKeys = keys;
         } catch {

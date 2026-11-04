@@ -24,13 +24,17 @@ import {
   armillarySpinAt,
   FILM,
 } from './flight.js';
-import { DarkroomPipeline, createDustField } from './post.js';
+import { DarkroomPipeline, createDustField, createAtmosphereField } from './post.js';
 
 const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
 // Idle orbit oscillation: group.rotation.x = sin(elapsed * OMEGA) * AMP.
 const OSC_AMP = 0.055;
 const OSC_OMEGA = 0.13;
-const BACKGROUND = '#000000';
+const BACKGROUND = '#040407';
+const DEFAULT_MOOD_PRIMARY = '#2c2119';
+const DEFAULT_MOOD_SECONDARY = '#141c2b';
+const TUNNEL_MOOD_PRIMARY = '#1c2638';
+const TUNNEL_MOOD_SECONDARY = '#302019';
 const IDLE_RING_RATES = [0.22, -0.17, 0.26, -0.14];
 const RING_AXIS_VECTORS = RING_AXES.map((axis) => new THREE.Vector3(...axis));
 const GAZE_FOV = 42;
@@ -111,6 +115,7 @@ export class PhotoUniverse {
   constructor(container, {
     onPick,
     onHoverPhoto,
+    onHoverStateChange,
     onFocusChange,
     onFilmProgress,
     onFilmEnd,
@@ -122,6 +127,7 @@ export class PhotoUniverse {
     this.callbacks = {
       onPick,
       onHoverPhoto,
+      onHoverStateChange,
       onFocusChange,
       onFilmProgress,
       onFilmEnd,
@@ -146,6 +152,14 @@ export class PhotoUniverse {
     this.parallaxGroup = new THREE.Group();
     this.parallaxGroup.add(this.group);
     this.scene.add(this.parallaxGroup);
+
+    this.atmosphere = createAtmosphereField();
+    this.scene.add(this.atmosphere.mesh);
+    this.moodPrimaryTarget = new THREE.Color(DEFAULT_MOOD_PRIMARY);
+    this.moodSecondaryTarget = new THREE.Color(DEFAULT_MOOD_SECONDARY);
+    this._hoveredPhotoIndex = -1;
+    this._dragBankTarget = 0;
+    this._dragBankCurrent = 0;
 
     this.dustField = createDustField(260);
     this.scene.add(this.dustField.points);
@@ -452,8 +466,12 @@ export class PhotoUniverse {
     const pointers = this.activePointers;
     if (!pointers?.has(event.pointerId) || this.film) return;
     const previous = pointers.get(event.pointerId);
-    const moved = Math.hypot(event.clientX - previous[0], event.clientY - previous[1]);
+    const dx = event.clientX - previous[0];
+    const moved = Math.hypot(dx, event.clientY - previous[1]);
     pointers.set(event.pointerId, [event.clientX, event.clientY]);
+    if (pointers.size === 1 && !this.focusState && !this.reducedMotion) {
+      this._dragBankTarget = clamp((this._dragBankTarget || 0) * 0.65 - dx * 0.00055, -0.028, 0.028);
+    }
     const tap = this.tapGesture;
     if (tap?.pointerId === event.pointerId) tap.maxDistance = Math.max(tap.maxDistance, Math.hypot(event.clientX - tap.x, event.clientY - tap.y));
     if (!this.focusState && ((tap?.maxDistance > 6) || (pointers.size > 1 && moved > 0.5))) this.claimManualView();
@@ -501,20 +519,26 @@ export class PhotoUniverse {
   }
 
   clearHover() {
+    const wasActive = Boolean(this.hoverActive);
     this.hoverPointer = null;
     this.hoverActive = false;
     this.hoveredInstanceKey = null;
+    this._hoveredPhotoIndex = -1;
     if (this.renderer?.domElement) {
       this.renderer.domElement.style.cursor = this.film || this.focusState ? 'default' : this.dragging ? 'grabbing' : 'grab';
     }
+    if (wasActive) this.callbacks?.onHoverStateChange?.({ active: false, photoIndex: -1 });
   }
 
   updateHover(time) {
     if (!this.renderer?.domElement) return;
     if (!this.pointerEnabled || this.film || this.focusState || this.dragging || this.instanceDirty || !this.hoverPointer) {
+      const wasActive = Boolean(this.hoverActive);
       this.hoverActive = false;
       this.hoveredInstanceKey = null;
+      this._hoveredPhotoIndex = -1;
       this.renderer.domElement.style.cursor = this.film || this.focusState ? 'default' : this.dragging ? 'grabbing' : 'grab';
+      if (wasActive) this.callbacks?.onHoverStateChange?.({ active: false, photoIndex: -1 });
       return;
     }
     if (time - this.lastHoverTime < 100) return;
@@ -534,16 +558,28 @@ export class PhotoUniverse {
       this.hoverActive = true;
       this.hoverTargetWorld ||= new THREE.Vector3();
       this.hoverTargetWorld.copy(hit.point);
+      const photoIndex = hit.object.userData?.photoIndices?.[hit.instanceId];
       const key = `${hit.object.uuid}:${hit.instanceId}`;
       if (key !== this.hoveredInstanceKey) {
         this.hoveredInstanceKey = key;
-        const photoIndex = hit.object.userData?.photoIndices?.[hit.instanceId];
-        if (photoIndex !== undefined) this.callbacks.onHoverPhoto?.(photoIndex);
+        this._hoveredPhotoIndex = photoIndex ?? -1;
+        if (photoIndex !== undefined) {
+          this.callbacks.onHoverPhoto?.(photoIndex);
+          this.callbacks.onHoverStateChange?.({
+            active: true,
+            photoIndex,
+            x: this.hoverPointer[0],
+            y: this.hoverPointer[1],
+          });
+        }
       }
     } else {
+      const wasActive = Boolean(this.hoverActive);
       this.renderer.domElement.style.cursor = 'grab';
       this.hoverActive = false;
       this.hoveredInstanceKey = null;
+      this._hoveredPhotoIndex = -1;
+      if (wasActive) this.callbacks?.onHoverStateChange?.({ active: false, photoIndex: -1 });
     }
   }
 
@@ -553,7 +589,13 @@ export class PhotoUniverse {
       this.focusPlateOwnedTexture = null;
     }
     if (!this.focusPlate) return;
+    this.focusOverlayScene?.remove(this.focusPlate);
     this.scene.remove(this.focusPlate);
+    for (const child of [...this.focusPlate.children]) {
+      child.material?.dispose?.();
+      child.geometry?.dispose?.();
+    }
+    this.focusPlate.clear();
     this.focusPlate.material.map = null;
     this.focusPlate.material.dispose();
     this.focusPlate.geometry.dispose();
@@ -572,12 +614,16 @@ export class PhotoUniverse {
       }
     }
     const camPos = this.camera.position;
+    const refCamPos = this.focusState?.saved?.position || camPos;
     const worldMat = this._focusMat ||= new THREE.Matrix4();
     const pos = this._focusTmpPos ||= new THREE.Vector3();
     const quat = this._focusTmpQuat ||= new THREE.Quaternion();
     const scale = this._focusTmpScale ||= new THREE.Vector3();
     const normal = this._focusTmpNormal ||= new THREE.Vector3();
+    const upVec = this._focusTmpUp ||= new THREE.Vector3();
     const toCam = this._focusTmpToCam ||= new THREE.Vector3();
+    const refCamDir = (this._focusTmpRefDir ||= new THREE.Vector3()).copy(refCamPos);
+    refCamDir.divideScalar(Math.max(1, refCamDir.length()));
 
     this.scene.updateMatrixWorld(true);
     let bestIndex = -1;
@@ -589,11 +635,14 @@ export class PhotoUniverse {
       worldMat.multiplyMatrices(inst.mesh.matrixWorld, this.dummy.matrix);
       worldMat.decompose(pos, quat, scale);
       normal.set(0, 0, 1).applyQuaternion(quat).normalize();
-      toCam.subVectors(camPos, pos);
-      const dist = Math.max(1, toCam.length());
-      toCam.divideScalar(dist);
+      upVec.set(0, 1, 0).applyQuaternion(quat).normalize();
+      toCam.subVectors(refCamPos, pos);
+      const refDist = Math.max(1, toCam.length());
+      toCam.divideScalar(refDist);
       const facing = normal.dot(toCam);
-      const score = facing * 3.5 - dist * 0.025;
+      const hemisphere = pos.dot(refCamDir) / Math.max(1, pos.length());
+      const glideDist = camPos.distanceTo(pos);
+      const score = facing * 3.4 + upVec.y * 3.2 + hemisphere * 2.6 - glideDist * 0.025;
       if (score > bestScore) {
         bestScore = score;
         bestIndex = i;
@@ -652,14 +701,32 @@ export class PhotoUniverse {
     worldMat.decompose(cardPos, cardQuat, cardScale);
 
     const normal = new THREE.Vector3(0, 0, 1).applyQuaternion(cardQuat).normalize();
+    const toViewer = this.camera.position.clone().sub(cardPos);
+    if (toViewer.lengthSq() > 1e-4 && normal.dot(toViewer) < 0) {
+      cardQuat.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI));
+      normal.negate();
+    }
     const cardUp = new THREE.Vector3(0, 1, 0).applyQuaternion(cardQuat).normalize();
-    const heroScale = cardScale.clone().multiplyScalar(1.45);
+    if (cardUp.y < -0.15) {
+      cardQuat.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), Math.PI));
+      cardUp.negate();
+    }
+    const photoMeta = this.photos?.[photoIndex];
+    let heroScale;
+    if (photoMeta?.width > 0 && photoMeta?.height > 0) {
+      const nativeAspect = clamp(photoMeta.width / photoMeta.height, 0.62, 1.85);
+      const baseMag = (Math.hypot(cardScale.x, cardScale.y) / Math.SQRT2) * 1.48;
+      const root = Math.sqrt(nativeAspect / 1.5);
+      heroScale = new THREE.Vector3(baseMag * root, baseMag / root, Math.abs(cardScale.z || 1) * 1.45);
+    } else {
+      heroScale = cardScale.clone().multiplyScalar(1.45);
+    }
     const heroPos = cardPos.clone().addScaledVector(normal, 2.1);
-    const cardW = 1.08 * Math.abs(heroScale.x);
-    const cardH = 0.72 * Math.abs(heroScale.y);
+    const cardW = 1.12 * Math.abs(heroScale.x);
+    const cardH = 0.76 * Math.abs(heroScale.y);
     const vHalfTan = Math.tan(THREE.MathUtils.degToRad(GAZE_FOV * 0.5));
     const hHalfTan = Math.max(0.24, vHalfTan * this.camera.aspect);
-    const gazeDist = Math.max(1.85, (cardH * 0.5) / (vHalfTan * 0.66), (cardW * 0.5) / (hHalfTan * 0.72));
+    const gazeDist = Math.max(1.85, (cardH * 0.5) / (vHalfTan * 0.64), (cardW * 0.5) / (hHalfTan * 0.70));
     const camDest = heroPos.clone().addScaledVector(normal, gazeDist);
 
     const uniforms = this.ensurePhotoUniforms();
@@ -737,6 +804,7 @@ export class PhotoUniverse {
       this.focusPlateOwnedTexture.dispose();
       this.focusPlateOwnedTexture = null;
     }
+    this.focusOverlayScene ||= new THREE.Scene();
     if (!this.focusPlate) {
       const geometry = new THREE.PlaneGeometry(1.08, 0.72);
       const material = new THREE.MeshBasicMaterial({
@@ -744,12 +812,70 @@ export class PhotoUniverse {
         side: THREE.DoubleSide,
         transparent: true,
         opacity: 1,
-        depthWrite: true,
+        depthTest: false,
+        depthWrite: false,
         toneMapped: false,
       });
       this.focusPlate = new THREE.Mesh(geometry, material);
-      this.focusPlate.renderOrder = 6;
-      this.scene.add(this.focusPlate);
+      this.focusPlate.frustumCulled = false;
+      this.focusPlate.renderOrder = 8;
+
+      // Museum archival paper mat + soft darkroom ambient halo behind the levitating print
+      const frameGeo = new THREE.PlaneGeometry(1.48, 1.08);
+      const frameMat = new THREE.ShaderMaterial({
+        transparent: true,
+        depthTest: false,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+        uniforms: {
+          uLift: { value: this.reducedMotion ? 1 : 0 },
+          uAspectScale: { value: new THREE.Vector2(1, 1) },
+        },
+        vertexShader: `
+          varying vec2 vUv;
+          void main() {
+            vUv = uv;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          }
+        `,
+        fragmentShader: `
+          uniform float uLift;
+          uniform vec2 uAspectScale;
+          varying vec2 vUv;
+          void main() {
+            vec2 p = (vUv - vec2(0.5)) * vec2(1.48, 1.08) * uAspectScale;
+            vec2 halfPrint = vec2(0.54, 0.36) * uAspectScale;
+            vec2 d = abs(p) - halfPrint;
+            float boxDist = length(max(d, 0.0)) + min(max(d.x, d.y), 0.0);
+            float minScale = min(uAspectScale.x, uAspectScale.y);
+            float borderThickness = 0.013 * minScale;
+            float matMask = 1.0 - smoothstep(borderThickness - 0.002, borderThickness + 0.002, boxDist);
+            float shadowDist = max(0.0, boxDist - borderThickness);
+            float maxHalo = 0.165 * minScale;
+            float edgeFade = 1.0 - smoothstep(maxHalo * 0.42, maxHalo * 0.95, shadowDist);
+            float halo = exp(-shadowDist * 13.0) * 0.64 * edgeFade;
+            vec3 matColor = vec3(0.952, 0.936, 0.904);
+            vec3 shadowColor = vec3(0.01, 0.01, 0.016);
+            vec3 col = mix(shadowColor, matColor, matMask);
+            float alpha = max(matMask * 0.96, halo) * uLift;
+            if (alpha < 0.003) discard;
+            gl_FragColor = vec4(col, alpha);
+          }
+        `,
+      });
+      const frameMesh = new THREE.Mesh(frameGeo, frameMat);
+      frameMesh.position.z = -0.004;
+      frameMesh.frustumCulled = false;
+      frameMesh.renderOrder = 7;
+      this.focusPlate.add(frameMesh);
+      this.focusPlate.userData.frameMat = frameMat;
+      this.focusOverlayScene.add(this.focusPlate);
+    }
+
+    const frameMat = this.focusPlate.userData?.frameMat;
+    if (frameMat) {
+      frameMat.uniforms.uLift.value = this.reducedMotion ? 1 : 0;
+      frameMat.uniforms.uAspectScale.value.set(Math.abs(heroScale.x), Math.abs(heroScale.y));
     }
 
     // Frame-0 seamless atlas preview while full-resolution print decodes.
@@ -783,6 +909,18 @@ export class PhotoUniverse {
     img.src = photo.url;
     const finishDecode = () => {
       if (generation !== this.focusGeneration || !this.focusState || !this.focusPlate) return;
+      if (img.naturalWidth > 0 && img.naturalHeight > 0 && (!photo.width || !photo.height)) {
+        photo.width = img.naturalWidth;
+        photo.height = img.naturalHeight;
+        const nativeAspect = clamp(img.naturalWidth / img.naturalHeight, 0.62, 1.85);
+        const baseMag = (Math.hypot(cardScale.x, cardScale.y) / Math.SQRT2) * 1.48;
+        const root = Math.sqrt(nativeAspect / 1.5);
+        this.focusState.heroScale.set(baseMag * root, baseMag / root, Math.abs(cardScale.z || 1) * 1.45);
+        frameMat?.uniforms.uAspectScale.value.set(
+          Math.abs(this.focusState.heroScale.x),
+          Math.abs(this.focusState.heroScale.y),
+        );
+      }
       const texture = new THREE.Texture(img);
       texture.colorSpace = THREE.SRGBColorSpace;
       texture.needsUpdate = true;
@@ -906,7 +1044,18 @@ export class PhotoUniverse {
     uniforms.uTunnelMode.value = this.mode === 'tunnel' ? 1 : 0;
 
     const batches = atlases.map(() => []);
-    const pool = chromaticPhotoPool(successful, photos, count);
+    const rawPool = chromaticPhotoPool(successful, photos, count);
+    const hasSpectral = Array.isArray(photos) && successful.some(
+      (entry) => Number.isFinite(photos[entry.photoIndex]?.spectralKey)
+    );
+    // Weave 3 continuous spectral waves across the 3,000 slots so both the stellated
+    // core, all 4 orbital rings, and the deep spiral corridor radiate full-spectrum hues.
+    const pool = hasSpectral && count >= 18
+      ? repairNeighbourDuplicates(
+          [0, 1, 2].flatMap((wave) => rawPool.filter((_, idx) => idx % 3 === wave)),
+          successful.length,
+        )
+      : rawPool;
     for (let index = 0; index < count; index++) {
       const entry = pool[index];
       batches[entry.atlasIndex].push({ ...entry, index });
@@ -966,7 +1115,8 @@ export class PhotoUniverse {
           float key = clamp(dot(n, normalize(vec3(-0.36, 0.48, 0.80))), 0.0, 1.0);
           float fill = clamp(dot(n, normalize(vec3(0.46, -0.32, 0.83))), 0.0, 1.0);
           vec3 halfVec = normalize(normalize(vec3(-0.24, 0.36, 0.90)) + v);
-          float spec = pow(clamp(dot(n, halfVec), 0.0, 1.0), 28.0) * 0.14;
+          float spec = pow(clamp(dot(n, halfVec), 0.0, 1.0), 30.0) * 0.14;
+          float fresnel = pow(1.0 - abs(dot(n, v)), 3.6) * 0.085;
           float luma = dot(diffuseColor.rgb, vec3(0.2126, 0.7152, 0.0722));
           diffuseColor.rgb = clamp(mix(vec3(luma), diffuseColor.rgb, 1.18) * 1.06, 0.0, 1.0);
           float shade = 0.76 + 0.24 * key + 0.10 * fill;
@@ -976,16 +1126,17 @@ export class PhotoUniverse {
             1.0 - smoothstep(42.0, 152.0, vPhotoDepth),
             uTunnelMode
           );
-          float focusDim = mix(1.0, mix(0.13, 1.0, vFocusKeep), uFocusAmount);
-          diffuseColor.rgb = (diffuseColor.rgb * shade + vec3(spec)) * backShade * horizonFade;
-          diffuseColor.rgb *= (1.0 + vHoverLift * 0.24 * (1.0 - uFocusAmount)) * focusDim;
+          float focusDim = mix(1.0, mix(0.22, 1.0, vFocusKeep), uFocusAmount);
           vec2 edge = min(vPaperUv, vec2(1.0) - vPaperUv);
           float edgeDistance = min(edge.x, edge.y);
+          float bevel = (1.0 - smoothstep(0.008, 0.032, edgeDistance)) * 0.055;
+          diffuseColor.rgb = (diffuseColor.rgb * shade + vec3(spec + fresnel + bevel) * vec3(1.0, 0.97, 0.92)) * backShade * horizonFade;
+          diffuseColor.rgb *= (1.0 + vHoverLift * 0.26 * (1.0 - uFocusAmount)) * focusDim;
           float aa = max(0.003, min(fwidth(edgeDistance), 0.014));
           diffuseColor.rgb *= smoothstep(0.0, aa, edgeDistance);
           diffuseColor.rgb = mix(uPaperBackground, diffuseColor.rgb, uReveal);`);
       };
-      material.customProgramCacheKey = () => 'memoria-darkroom-v4';
+      material.customProgramCacheKey = () => 'memoria-darkroom-v5';
       const mesh = new THREE.InstancedMesh(geometry, material, batch.length);
       mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
       mesh.frustumCulled = false;
@@ -1019,6 +1170,9 @@ export class PhotoUniverse {
     uniforms.uReveal.value = this.reducedMotion ? 1 : 0;
     this.reveal = this.reducedMotion ? null : { elapsed: 0, duration: options?.genesis ? 1.55 : 1.35 };
     this.resetView(!hadPhotos);
+    if (!this.reducedMotion && typeof this.renderer?.compile === 'function') {
+      try { this.renderer.compile(this.scene, this.camera); } catch {}
+    }
 
     // 2.25s Deep-Space Stardust Convergence ritual on initial load / album import.
     if (options?.genesis && !this.reducedMotion && this.instances.length) {
@@ -1592,6 +1746,7 @@ export class PhotoUniverse {
   }
 
   _renderFrame(timeSeconds) {
+    const focusBlur = clamp(this.photoUniforms?.uFocusAmount?.value || 0, 0, 1);
     if (this.darkroomPipeline?.enabled) {
       const morphImpulse = this.morph
         ? Math.sin(Math.PI * clamp(this.morph.elapsed / Math.max(0.01, this.morph.duration), 0, 1))
@@ -1602,9 +1757,15 @@ export class PhotoUniverse {
         0,
         1.15,
       );
-      this.darkroomPipeline.render(this.scene, this.camera, { time: timeSeconds, warp });
+      this.darkroomPipeline.render(this.scene, this.camera, { time: timeSeconds, warp, focusBlur });
     } else {
       this.renderer.render(this.scene, this.camera);
+    }
+    if (this.focusPlate && this.focusOverlayScene && this.focusState) {
+      const prevAutoClear = this.renderer.autoClear;
+      this.renderer.autoClear = false;
+      this.renderer.render(this.focusOverlayScene, this.camera);
+      this.renderer.autoClear = prevAutoClear ?? true;
     }
   }
 
@@ -1728,10 +1889,25 @@ export class PhotoUniverse {
     if (this.parallaxGroup) {
       const allowed = this.pointerEnabled && !this.reducedMotion && !this.dragging && !this.film && !this.focusState;
       if (!allowed) this.pointerTarget.set(0, 0);
-      if (this.reducedMotion || this.film || this.focusState) this.pointerCurrent.set(0, 0);
-      else this.pointerCurrent.lerp(this.pointerTarget, 1 - Math.exp(-dt * 5));
+      if (this.reducedMotion || this.film || this.focusState) {
+        this.pointerCurrent.set(0, 0);
+        this._dragBankTarget = 0;
+        this._dragBankCurrent = 0;
+      } else {
+        this.pointerCurrent.lerp(this.pointerTarget, 1 - Math.exp(-dt * 5));
+        this._dragBankTarget = (this._dragBankTarget || 0) * Math.exp(-dt * 7.5);
+        this._dragBankCurrent = THREE.MathUtils.lerp(
+          this._dragBankCurrent || 0,
+          this._dragBankTarget,
+          1 - Math.exp(-dt * 9),
+        );
+      }
       const strength = this.camera.aspect < 0.85 ? 0.005 : 0.016;
-      this.parallaxGroup.rotation.set(this.pointerCurrent.y * strength, this.pointerCurrent.x * strength, 0);
+      this.parallaxGroup.rotation.set(
+        this.pointerCurrent.y * strength,
+        this.pointerCurrent.x * strength,
+        this._dragBankCurrent || 0,
+      );
     }
     if (this.photoUniforms) {
       const uniforms = this.ensurePhotoUniforms();
@@ -1769,11 +1945,52 @@ export class PhotoUniverse {
       const lift = easeInOut(this.focusState.elapsed / Math.max(1e-6, this.focusState.duration));
       this.focusPlate.position.lerpVectors(this.focusState.cardPos, this.focusState.heroPos, lift);
       this.focusPlate.scale.lerpVectors(this.focusState.cardScale, this.focusState.heroScale, lift);
+      const frameMat = this.focusPlate.userData?.frameMat;
+      if (frameMat) {
+        frameMat.uniforms.uLift.value = lift;
+        frameMat.uniforms.uAspectScale.value.set(
+          Math.abs(this.focusPlate.scale.x),
+          Math.abs(this.focusPlate.scale.y),
+        );
+      }
+    }
+    if (this.atmosphere) {
+      const au = this.atmosphere.uniforms;
+      au.uTime.value = time * 0.001;
+      const tunnelFactor = this.photoUniforms?.uTunnelMode?.value || 0;
+      const focusFactor = this.photoUniforms?.uFocusAmount?.value || 0;
+      const reveal = this.photoUniforms?.uReveal?.value ?? 1;
+      au.uTunnelFactor.value = tunnelFactor;
+      au.uFocusFactor.value = focusFactor;
+      au.uIntensity.value = (0.38 + focusFactor * 0.24 + tunnelFactor * 0.14) * reveal;
+
+      const moodSourceIndex = this.focusState
+        ? this.focusState.photoIndex
+        : this.hoverActive
+          ? (this._hoveredPhotoIndex ?? -1)
+          : -1;
+      const moodRgb = moodSourceIndex >= 0 ? this.photos?.[moodSourceIndex]?.moodRgb : null;
+      this.moodPrimaryTarget ||= new THREE.Color(DEFAULT_MOOD_PRIMARY);
+      this.moodSecondaryTarget ||= new THREE.Color(DEFAULT_MOOD_SECONDARY);
+      if (Array.isArray(moodRgb)) {
+        const scale = this.focusState ? 0.28 : 0.20;
+        this.moodPrimaryTarget.setRGB(moodRgb[0] * scale, moodRgb[1] * scale, moodRgb[2] * scale);
+        this.moodSecondaryTarget.setRGB(moodRgb[2] * 0.12, moodRgb[0] * 0.11, moodRgb[1] * 0.16);
+      } else if (this.mode === 'tunnel') {
+        this.moodPrimaryTarget.set(TUNNEL_MOOD_PRIMARY);
+        this.moodSecondaryTarget.set(TUNNEL_MOOD_SECONDARY);
+      } else {
+        this.moodPrimaryTarget.set(DEFAULT_MOOD_PRIMARY);
+        this.moodSecondaryTarget.set(DEFAULT_MOOD_SECONDARY);
+      }
+      const moodAlpha = this.reducedMotion ? 1 : 1 - Math.exp(-dt * 2.8);
+      au.uPrimaryColor.value.lerp(this.moodPrimaryTarget, moodAlpha);
+      au.uSecondaryColor.value.lerp(this.moodSecondaryTarget, moodAlpha);
     }
     if (this.dustField) {
       this.dustField.uniforms.uTime.value = time * 0.001;
       this.dustField.uniforms.uConveyor.value = this.tunnelConveyor || 0;
-      this.dustField.uniforms.uOpacity.value = (this.focusState ? 0.08 : 0.24) * (this.photoUniforms?.uReveal?.value ?? 1);
+      this.dustField.uniforms.uOpacity.value = (this.focusState ? 0.11 : 0.24) * (this.photoUniforms?.uReveal?.value ?? 1);
     }
     // Group/camera motion needs no instance uploads once a morph/effect settles.
     this.updateInstanceTransforms(dt);
@@ -1785,6 +2002,11 @@ export class PhotoUniverse {
   dispose() {
     this.renderer.setAnimationLoop(null);
     this.clearPhotos();
+    if (this.atmosphere) {
+      this.scene.remove(this.atmosphere.mesh);
+      this.atmosphere.dispose();
+      this.atmosphere = null;
+    }
     if (this.dustField) {
       this.scene.remove(this.dustField.points);
       this.dustField.dispose();

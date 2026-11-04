@@ -6,6 +6,16 @@ function srgbToLinear(c) {
   return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
 }
 
+function linearToSrgb(c) {
+  const v = Math.max(0, Math.min(1, c));
+  return v <= 0.0031308 ? 12.92 * v : 1.055 * (v ** (1 / 2.4)) - 0.055;
+}
+
+function rgbFloatToHex(r, g, b) {
+  const toByte = (v) => Math.max(0, Math.min(255, Math.round(v * 255))).toString(16).padStart(2, '0');
+  return `#${toByte(r)}${toByte(g)}${toByte(b)}`;
+}
+
 /**
  * Perceptually uniform OKLab spectral sort key from average RGB [0..255].
  * Saturated photographs sort continuously around the hue wheel starting at warm
@@ -31,6 +41,155 @@ export function rgbToSpectralKey(r255, g255, b255) {
   // Anchor 0.0 at warm gold (~55 deg in OKLab) for an editorial warm-to-cool-to-warm arc.
   const hue = (Math.atan2(bLab, a) - 0.96 + TAU * 2) % TAU;
   return hue / TAU;
+}
+
+/**
+ * Extracts perceptual spectral key, luminous gallery accent swatch, normalized mood RGB,
+ * and darkroom tone classification from a photograph's average RGB [0..255].
+ */
+export function extractPhotoMood(r255, g255, b255) {
+  const spectralKey = rgbToSpectralKey(r255, g255, b255);
+  const rn = Math.max(0, Math.min(255, r255)) / 255;
+  const gn = Math.max(0, Math.min(255, g255)) / 255;
+  const bn = Math.max(0, Math.min(255, b255)) / 255;
+
+  if (spectralKey >= 1) {
+    return {
+      spectralKey,
+      accentHex: '#cfc9bf',
+      moodRgb: [0.58, 0.56, 0.54],
+      toneLabel: '银盐 · SILVER',
+    };
+  }
+
+  // Lift dark/muted averages into a tasteful luminous curatorial accent without clipping.
+  const luma = 0.2126 * rn + 0.7152 * gn + 0.0722 * bn;
+  const lift = luma < 0.42 ? 0.42 / Math.max(0.08, luma) : 1.0;
+  let ar = Math.min(1, rn * lift);
+  let ag = Math.min(1, gn * lift);
+  let ab = Math.min(1, bn * lift);
+  const mean = (ar + ag + ab) / 3;
+  ar = Math.max(0.18, Math.min(0.96, mean + (ar - mean) * 1.45));
+  ag = Math.max(0.18, Math.min(0.96, mean + (ag - mean) * 1.45));
+  ab = Math.max(0.18, Math.min(0.96, mean + (ab - mean) * 1.45));
+
+  // Ensure linear->sRGB perceptual balance for UI chips.
+  const sr = linearToSrgb(srgbToLinear(ar) * 0.92 + 0.04);
+  const sg = linearToSrgb(srgbToLinear(ag) * 0.92 + 0.04);
+  const sb = linearToSrgb(srgbToLinear(ab) * 0.92 + 0.04);
+
+  let toneLabel = '琥珀 · AMBER';
+  if (spectralKey >= 0.84) toneLabel = '绯红 · CRIMSON';
+  else if (spectralKey >= 0.68) toneLabel = '暮紫 · VIOLET';
+  else if (spectralKey >= 0.48) toneLabel = '钴蓝 · COBALT';
+  else if (spectralKey >= 0.30) toneLabel = '冰青 · CYAN';
+  else if (spectralKey >= 0.14) toneLabel = '苍翠 · EMERALD';
+
+  return {
+    spectralKey,
+    accentHex: rgbFloatToHex(sr, sg, sb),
+    moodRgb: [
+      Number(sr.toFixed(3)),
+      Number(sg.toFixed(3)),
+      Number(sb.toFixed(3)),
+    ],
+    toneLabel,
+  };
+}
+
+/**
+ * Mood-driven volumetric darkroom atmosphere backdrop:
+ * Renders a depth-off full-screen light field behind all 3D geometry (`renderOrder = -10`),
+ * replacing flat dead `#000000` with two slow-drifting volumetric lobes that smoothly
+ * bleed toward the hovered or focused photograph's dominant palette.
+ */
+export function createAtmosphereField() {
+  const geometry = new THREE.PlaneGeometry(2, 2);
+  const uniforms = {
+    uTime: { value: 0 },
+    uPrimaryColor: { value: new THREE.Color('#2c2119') },
+    uSecondaryColor: { value: new THREE.Color('#141c2b') },
+    uIntensity: { value: 0.38 },
+    uTunnelFactor: { value: 0 },
+    uFocusFactor: { value: 0 },
+  };
+
+  const material = new THREE.ShaderMaterial({
+    uniforms,
+    depthTest: false,
+    depthWrite: false,
+    transparent: false,
+    vertexShader: `
+      varying vec2 vUv;
+      void main() {
+        vUv = uv;
+        gl_Position = vec4(position.xy, 0.9999, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform float uTime;
+      uniform vec3 uPrimaryColor;
+      uniform vec3 uSecondaryColor;
+      uniform float uIntensity;
+      uniform float uTunnelFactor;
+      uniform float uFocusFactor;
+      varying vec2 vUv;
+
+      float hash12(vec2 p) {
+        vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+        p3 += dot(p3, p3.yzx + 33.33);
+        return fract((p3.x + p3.y) * p3.z);
+      }
+
+      void main() {
+        vec2 uv = vUv;
+        float t = uTime * 0.16;
+
+        vec2 c1 = vec2(
+          0.50 + sin(t * 0.93) * 0.11 + cos(t * 0.47) * 0.04,
+          0.50 + cos(t * 0.79) * 0.09 + sin(t * 0.61) * 0.03
+        );
+        vec2 c2 = vec2(
+          0.44 + cos(t * 0.71) * 0.14,
+          0.54 + sin(t * 0.83) * 0.11
+        );
+
+        float r1 = mix(0.62, 0.76, uFocusFactor);
+        float r2 = mix(0.52, 0.64, uTunnelFactor);
+        float lobe1 = smoothstep(r1, 0.0, distance(uv, c1));
+        float lobe2 = smoothstep(r2, 0.0, distance(uv, c2));
+
+        // Center portal depth glow during corridor flight
+        float centerDist = distance(uv, vec2(0.5, 0.5));
+        float portalGlow = smoothstep(0.46, 0.0, centerDist) * uTunnelFactor * 0.32;
+
+        vec3 base = vec3(0.010, 0.010, 0.014);
+        vec3 color = base;
+        color = mix(color, uPrimaryColor, (lobe1 * lobe1) * uIntensity);
+        color = mix(color, uSecondaryColor, (lobe2 * lobe2) * (uIntensity * 0.76 + portalGlow));
+
+        // Keep outer corners true darkroom obsidian so card fog seamlessly melts in
+        float edgeVignette = smoothstep(0.92, 0.18, centerDist);
+        color *= mix(0.28, 1.0, edgeVignette);
+
+        // Micro-dither eliminates 8-bit banding across ultra-smooth darkroom gradients
+        float dither = (hash12(gl_FragCoord.xy + fract(uTime) * 97.0) - 0.5) / 190.0;
+        gl_FragColor = vec4(clamp(color + dither, 0.0, 1.0), 1.0);
+      }
+    `,
+  });
+
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.frustumCulled = false;
+  mesh.renderOrder = -10;
+  return {
+    mesh,
+    uniforms,
+    dispose() {
+      geometry.dispose();
+      material.dispose();
+    },
+  };
 }
 
 /**
@@ -127,8 +286,9 @@ export function createDustField(count = 260) {
 /**
  * Lightweight 2-pass darkroom optical pipeline:
  * 1) Quarter-resolution warm photochemical halation extraction + blur
- * 2) Full-resolution composite with tunnel velocity chromatic dispersion,
- *    fine silver-halide film grain, and subtle optical vignette.
+ * 2) Full-resolution composite with 14-tap Golden-Angle Vogel Disc Bokeh DOF
+ *    (during 3D In-Situ Gaze), tunnel velocity chromatic dispersion, ACES Filmic
+ *    highlight roll-off, fine silver-halide film grain, and optical vignette.
  */
 export class DarkroomPipeline {
   constructor(renderer) {
@@ -171,8 +331,8 @@ export class DarkroomPipeline {
         varying vec2 vUv;
         vec3 extractBright(vec3 c) {
           float luma = dot(c, vec3(0.2126, 0.7152, 0.0722));
-          float knee = smoothstep(0.62, 0.98, luma);
-          return c * knee * vec3(1.08, 0.93, 0.82);
+          float knee = smoothstep(0.58, 0.96, luma);
+          return c * knee * vec3(1.10, 0.94, 0.82);
         }
         void main() {
           vec2 o = uTexelSize * 2.2;
@@ -194,10 +354,12 @@ export class DarkroomPipeline {
       uniforms: {
         tScene: { value: null },
         tHalation: { value: null },
+        uSceneTexel: { value: new THREE.Vector2(1 / 1280, 1 / 720) },
         uTime: { value: 0 },
         uWarp: { value: 0 },
-        uHalation: { value: 0.24 },
-        uGrain: { value: 0.015 },
+        uFocusBlur: { value: 0 },
+        uHalation: { value: 0.26 },
+        uGrain: { value: 0.014 },
       },
       depthTest: false,
       depthWrite: false,
@@ -211,8 +373,10 @@ export class DarkroomPipeline {
       fragmentShader: `
         uniform sampler2D tScene;
         uniform sampler2D tHalation;
+        uniform vec2 uSceneTexel;
         uniform float uTime;
         uniform float uWarp;
+        uniform float uFocusBlur;
         uniform float uHalation;
         uniform float uGrain;
         varying vec2 vUv;
@@ -223,21 +387,52 @@ export class DarkroomPipeline {
           return fract((p3.x + p3.y) * p3.z);
         }
 
+        // Subtle ACES-inspired filmic shoulder so bright highlights roll off smoothly
+        vec3 filmicShoulder(vec3 x) {
+          return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
+        }
+
+        // 14-tap Golden-Angle Vogel Disc optical bokeh for 3D In-Situ Gaze background
+        vec3 sampleOpticalBokeh(vec2 uv, float amount) {
+          vec2 radius = uSceneTexel * (16.5 * amount);
+          vec3 acc = texture2D(tScene, uv).rgb * 1.15;
+          float total = 1.15;
+          for (int i = 1; i <= 14; i++) {
+            float fi = float(i);
+            float r = sqrt(fi / 14.5);
+            float theta = fi * 2.39996323;
+            vec2 offset = vec2(cos(theta), sin(theta)) * r * radius;
+            vec3 tap = texture2D(tScene, clamp(uv + offset, 0.001, 0.999)).rgb;
+            float luma = dot(tap, vec3(0.2126, 0.7152, 0.0722));
+            // Specular bokeh highlight emphasis (medium-format lens aperture character)
+            float weight = 1.0 + smoothstep(0.22, 0.85, luma) * 1.35;
+            acc += tap * weight;
+            total += weight;
+          }
+          return acc / total;
+        }
+
         void main() {
           vec2 centered = vUv - vec2(0.5);
           float r2 = dot(centered, centered);
           vec2 dispersion = centered * r2 * (0.0085 * uWarp);
 
-          float r = texture2D(tScene, clamp(vUv + dispersion, 0.0, 1.0)).r;
-          float g = texture2D(tScene, vUv).g;
-          float b = texture2D(tScene, clamp(vUv - dispersion, 0.0, 1.0)).b;
-          vec3 color = vec3(r, g, b);
+          vec3 color;
+          if (uFocusBlur > 0.006) {
+            color = sampleOpticalBokeh(vUv, uFocusBlur);
+          } else {
+            float r = texture2D(tScene, clamp(vUv + dispersion, 0.0, 1.0)).r;
+            float g = texture2D(tScene, vUv).g;
+            float b = texture2D(tScene, clamp(vUv - dispersion, 0.0, 1.0)).b;
+            color = vec3(r, g, b);
+          }
 
           vec3 glow = texture2D(tHalation, vUv).rgb;
-          color += glow * uHalation;
+          color += glow * (uHalation * (1.0 + uFocusBlur * 0.45));
+          color = mix(color, filmicShoulder(color * 1.06), 0.36);
 
-          // Subtle optical vignette that preserves center brightness
-          float vignette = 1.0 - r2 * 0.18;
+          // Optical lens vignette deepens subtly during close-up 3D Gaze
+          float vignette = 1.0 - r2 * mix(0.20, 0.42, uFocusBlur);
           color *= vignette;
 
           // Fine monochrome silver-halide film grain
@@ -264,13 +459,14 @@ export class DarkroomPipeline {
     const w = Math.max(1, Math.floor(width * pixelRatio));
     const h = Math.max(1, Math.floor(height * pixelRatio));
     this.sceneTarget.setSize(w, h);
+    this.compositeMaterial.uniforms.uSceneTexel.value.set(1 / w, 1 / h);
     const bw = Math.max(1, Math.floor(w * 0.28));
     const bh = Math.max(1, Math.floor(h * 0.28));
     this.bloomTarget.setSize(bw, bh);
     this.halationMaterial.uniforms.uTexelSize.value.set(1 / bw, 1 / bh);
   }
 
-  render(scene, camera, { time = 0, warp = 0 } = {}) {
+  render(scene, camera, { time = 0, warp = 0, focusBlur = 0 } = {}) {
     if (!this.enabled) {
       this.renderer.render(scene, camera);
       return;
@@ -287,6 +483,7 @@ export class DarkroomPipeline {
     this.compositeMaterial.uniforms.tHalation.value = this.bloomTarget.texture;
     this.compositeMaterial.uniforms.uTime.value = time;
     this.compositeMaterial.uniforms.uWarp.value = warp;
+    this.compositeMaterial.uniforms.uFocusBlur.value = focusBlur;
     this.renderer.setRenderTarget(previousTarget);
     this.renderer.render(this.compositeScene, this.orthoCamera);
   }

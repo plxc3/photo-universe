@@ -3,8 +3,20 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <meta name="theme-color" content="#000000" />
-    <meta name="description" content="Memoria，照片的立体暗房空间。导入你的相册，在色温星环、螺旋走廊与空间声景中重温记忆。" />
+    <meta name="theme-color" content="#040407" />
+    <meta name="description" content="Memoria，照片的立体暗房空间。导入你的相册，在 OKLab 色温星环、螺旋走廊、光学散景凝视与空间声景中重温记忆。" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Memoria" />
+    <meta property="og:title" content="Memoria — 记忆的形状 · 三维暗房星图" />
+    <meta property="og:description" content="将多达 3,000 张照片显影为可漫游的色温星环与螺旋走廊，支持原位光学散景凝视与 18 Mbps 音画录制。" />
+    <meta property="og:url" content="https://plxc3.github.io/photo-universe/" />
+    <meta property="og:image" content="https://plxc3.github.io/photo-universe/og-preview.jpg" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Memoria — 记忆的形状 · 三维暗房星图" />
+    <meta name="twitter:description" content="将多达 3,000 张照片显影为可漫游的色温星环与螺旋走廊，支持原位光学散景凝视与 18 Mbps 音画录制。" />
+    <meta name="twitter:image" content="https://plxc3.github.io/photo-universe/og-preview.jpg" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="preload" href="/fonts/newsreader-latin-italic-variable.woff2" as="font" type="font/woff2" crossorigin />
     <link rel="preload" href="/fonts/manrope-latin-variable.woff2" as="font" type="font/woff2" crossorigin />
@@ -13,13 +25,24 @@
   <body>
     <main id="app">
       <div id="scene" aria-label="三维照片空间。拖动旋转，滚轮或双指缩放，点击照片飞入原位凝视。"></div>
+      <div id="cursor-reticle" class="cursor-reticle" aria-hidden="true"><span class="reticle-frame"></span></div>
       <header class="topbar chrome">
-        <h1 class="brand"><button id="brand" aria-label="Memoria，重置视角">Memoria</button></h1>
-        <button id="collection" class="collection-button" aria-label="浏览相册"><i data-lucide="grid-2x2" aria-hidden="true"></i><span id="photo-count" aria-live="polite">正在载入</span></button>
+        <h1 class="brand">
+          <button id="brand" aria-label="Memoria，重置视角">
+            <span class="brand-word">Memoria</span>
+            <span class="brand-sub" aria-hidden="true">OPTICAL ARCHIVE</span>
+          </button>
+        </h1>
+        <button id="collection" class="collection-button" aria-label="浏览相册">
+          <i data-lucide="grid-2x2" aria-hidden="true"></i>
+          <span id="photo-count" aria-live="polite">正在载入</span>
+        </button>
         <div class="top-actions">
-          <button class="import-button" id="import"><i data-lucide="plus" aria-hidden="true"></i><span>导入照片</span></button>
-          <button class="icon-button" id="sound-toggle" aria-label="静音空间音效" aria-pressed="true" title="空间音效"><i data-lucide="volume-2" aria-hidden="true"></i></button>
-          <button class="icon-button" id="help" aria-label="使用说明" title="使用说明"><i data-lucide="info" aria-hidden="true"></i></button>
+          <button class="import-button magnetic" id="import"><i data-lucide="plus" aria-hidden="true"></i><span>导入照片</span></button>
+          <button class="icon-button sound-button magnetic" id="sound-toggle" aria-label="静音空间音效" aria-pressed="true" title="空间音效">
+            <span class="sound-eq" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+          </button>
+          <button class="icon-button magnetic" id="help" aria-label="使用说明" title="使用说明"><i data-lucide="info" aria-hidden="true"></i></button>
         </div>
       </header>
       <span class="sr-only" id="particle-count"></span>
@@ -29,17 +52,22 @@
           <button data-mode="orbit" aria-pressed="true">星环</button><button data-mode="tunnel" aria-pressed="false">隧道</button><button data-mode="sphere" aria-pressed="false">星球</button><button data-mode="helix" aria-pressed="false">螺旋</button>
         </nav>
         <div class="film-actions">
-          <button class="icon-button" id="play" aria-label="暂停旋转" title="暂停旋转"><i data-lucide="pause" aria-hidden="true"></i></button>
-          <button id="film" class="tour-button"><i data-lucide="play" aria-hidden="true"></i><span>30 秒漫游</span></button>
-          <button id="record" class="icon-button" aria-label="录制 30 秒音画视频" title="录制 30 秒音画视频"><i data-lucide="download" aria-hidden="true"></i></button>
-          <button id="settings" class="icon-button" aria-label="视图设置" title="视图设置"><i data-lucide="sliders-horizontal" aria-hidden="true"></i></button>
+          <button class="icon-button magnetic" id="play" aria-label="暂停旋转" title="暂停旋转"><i data-lucide="pause" aria-hidden="true"></i></button>
+          <button id="film" class="tour-button magnetic"><i data-lucide="play" aria-hidden="true"></i><span>30 秒漫游</span></button>
+          <button id="record" class="icon-button magnetic" aria-label="录制 30 秒音画视频" title="录制 30 秒音画视频"><i data-lucide="download" aria-hidden="true"></i></button>
+          <button id="settings" class="icon-button magnetic" aria-label="视图设置" title="视图设置"><i data-lucide="sliders-horizontal" aria-hidden="true"></i></button>
         </div>
       </footer>
       <aside id="focus-hud" class="focus-hud" aria-label="照片原位凝视" hidden>
         <div class="focus-caption" aria-live="polite" aria-atomic="true">
-          <span id="focus-title"></span>
-          <span id="focus-number"></span>
+          <div class="focus-meta-row">
+            <span id="focus-swatch" class="focus-swatch" aria-hidden="true"></span>
+            <span id="focus-number" class="focus-number"></span>
+            <span id="focus-tone" class="focus-tone"></span>
+          </div>
+          <span id="focus-title" class="focus-title"></span>
         </div>
+        <div id="focus-strip" class="focus-strip" role="group" aria-label="相邻照片胶片刻度"></div>
         <div class="focus-controls">
           <button class="icon-button" id="focus-prev" aria-label="上一张照片" title="上一张 (←)"><i data-lucide="arrow-left" aria-hidden="true"></i></button>
           <button class="icon-button" id="focus-next" aria-label="下一张照片" title="下一张 (→)"><i data-lucide="arrow-right" aria-hidden="true"></i></button>
@@ -94,7 +122,7 @@
       <dialog id="help-dialog" aria-labelledby="help-title">
         <button class="dialog-close icon-button" aria-label="关闭说明"><i data-lucide="x" aria-hidden="true"></i></button>
         <h2 id="help-title">慢慢探索。</h2>
-        <p>拖动旋转，滚轮或双指缩放。点击任意三维照片将飞入它的物理位置原位凝视，按方向键或滑动可在相片间穿梭。</p>
+        <p>拖动旋转，滚轮或双指缩放。点击任意三维照片将飞入它的物理位置原位凝视，背景化为光学散景，按方向键、滑动或点击刻度即可在相片间穿梭。</p>
         <p>导入或拖入最多 3,000 张照片，系统会提取色温并按光谱流向构筑星环与走廊。所有照片仅留在当前浏览器。</p>
         <div class="help-shortcuts"><span><kbd>空格</kbd> 暂停</span><span><kbd>←</kbd><kbd>→</kbd> 穿梭凝视</span><span><kbd>H</kbd> 隐藏界面</span><span><kbd>Esc</kbd> 退出</span></div>
         <button id="demo" class="button">恢复精选相册</button>

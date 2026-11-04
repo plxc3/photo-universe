@@ -18,8 +18,6 @@ import {
   ArrowRight,
   ArrowUpRight,
   Grid2x2,
-  Volume2,
-  VolumeX,
 } from 'lucide';
 import { PhotoUniverse } from './scene.js';
 import { FORMATIONS } from './formations.js';
@@ -47,8 +45,6 @@ const icons = {
   ArrowRight,
   ArrowUpRight,
   Grid2x2,
-  Volume2,
-  VolumeX,
 };
 const drawIcons = () => createIcons({ icons, attrs: { 'aria-hidden': 'true' } });
 const params = new URLSearchParams(location.search);
@@ -56,6 +52,12 @@ const inspecting = params.has('inspect');
 const debugEnabled = inspecting || params.has('debug');
 const profiler = new FrameProfiler();
 const soundscape = new SpatialSoundscape();
+try {
+  const savedMuted = localStorage.getItem('memoria:muted');
+  if (savedMuted === 'true' || window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    soundscape.setMuted(true);
+  }
+} catch {}
 
 let universe;
 let photos = [];
@@ -110,6 +112,8 @@ function syncFilmReadout(seconds) {
   $('film-time').textContent = '00:' + String(Math.floor(seconds)).padStart(2, '0') + ' / 00:30';
   $('film-act').textContent = actLabelForTime(seconds);
   $('film-progress').value = seconds;
+  const pct = Math.max(0, Math.min(100, (seconds / 29.65) * 100)).toFixed(2) + '%';
+  $('film-scrubber').style.setProperty('--scrub-pct', pct);
   if (!scrubbingFilm) {
     $('film-scrubber').value = String(Math.min(29.65, seconds));
   }
@@ -123,9 +127,11 @@ function syncSoundUI() {
   const label = active ? '静音空间音效' : '开启空间音效';
   button.setAttribute('aria-label', label);
   button.title = label;
-  button.innerHTML = '<i data-lucide="' + (active ? 'volume-2' : 'volume-x') + '" aria-hidden="true"></i>';
-  drawIcons();
+  try {
+    localStorage.setItem('memoria:muted', String(soundscape.muted));
+  } catch {}
 }
+syncSoundUI();
 
 function wakeAudio() {
   if (!soundscape.muted) soundscape.ensureStarted();
@@ -150,9 +156,53 @@ function syncPlaying() {
   drawIcons();
 }
 
+function formatAspectTag(photo) {
+  if (!photo?.width || !photo?.height) return '';
+  const ratio = photo.width / photo.height;
+  if (Math.abs(ratio - 1.5) < 0.08) return '3:2';
+  if (Math.abs(ratio - 4 / 3) < 0.08) return '4:3';
+  if (Math.abs(ratio - 1) < 0.08) return '1:1';
+  if (Math.abs(ratio - 0.75) < 0.08) return '3:4';
+  if (Math.abs(ratio - 2 / 3) < 0.08) return '2:3';
+  return ratio >= 1 ? `${ratio.toFixed(1)}:1` : `1:${(1 / ratio).toFixed(1)}`;
+}
+
+function renderFocusStrip(centerPosition) {
+  const strip = $('focus-strip');
+  if (!strip || !validPhotoIndices.length) return;
+  const total = validPhotoIndices.length;
+  const span = Math.min(15, total);
+  const half = Math.floor(span / 2);
+  strip.replaceChildren();
+  for (let offset = -half; offset < span - half; offset++) {
+    const pos = (centerPosition + offset + total) % total;
+    const pIdx = validPhotoIndices[pos];
+    const p = photos[pIdx];
+    const tick = document.createElement('button');
+    tick.type = 'button';
+    tick.className = 'focus-tick';
+    if (p?.accentHex) tick.style.setProperty('--tick-color', p.accentHex);
+    const isCurrent = offset === 0;
+    if (isCurrent) tick.setAttribute('aria-current', 'true');
+    tick.setAttribute('aria-label', '跳转至第 ' + (pos + 1) + ' 张照片');
+    tick.title = (p?.author || p?.name || '') + ' · #' + (pos + 1);
+    tick.addEventListener('click', () => {
+      if (!isCurrent) showPhoto(pIdx);
+    });
+    strip.append(tick);
+  }
+}
+
 function updateFocusCaption(photo, position) {
+  const accent = photo.accentHex || '#c8a27c';
+  $('focus-hud').style.setProperty('--photo-accent', accent);
   $('focus-title').textContent = photo.source === 'demo' && photo.author ? photo.author : photo.name;
-  $('focus-number').textContent = (position + 1).toLocaleString() + ' / ' + validPhotoIndices.length.toLocaleString();
+  const idxPad = String(position + 1).padStart(2, '0');
+  $('focus-number').textContent = 'No. ' + idxPad + ' / ' + validPhotoIndices.length.toLocaleString();
+  const aspectTag = formatAspectTag(photo);
+  const tone = photo.toneLabel || '暗房 · ARCHIVE';
+  $('focus-tone').textContent = aspectTag ? tone + ' · ' + aspectTag : tone;
+  renderFocusStrip(position);
 }
 
 function showPhoto(index, instanceIndex = -1) {
@@ -597,6 +647,64 @@ function contextLost() {
   showError('三维渲染已中断。你仍可浏览相册，或重新打开空间。');
 }
 
+// Precision Optical Viewfinder Reticle & Tactile Magnetic Micro-Interactions (desktop fine pointer only)
+const finePointerQuery = window.matchMedia('(hover: hover) and (pointer: fine)');
+const reticleEl = $('cursor-reticle');
+let reticleTargetX = -100;
+let reticleTargetY = -100;
+let reticleX = -100;
+let reticleY = -100;
+let reticleActive = false;
+
+if (finePointerQuery.matches && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+  window.addEventListener('pointermove', event => {
+    if (event.pointerType === 'touch') return;
+    reticleTargetX = event.clientX;
+    reticleTargetY = event.clientY;
+    if (!reticleActive) {
+      reticleX = reticleTargetX;
+      reticleY = reticleTargetY;
+      reticleActive = true;
+      reticleEl?.classList.add('visible');
+    }
+    const overInteractive = Boolean(event.target?.closest?.('button, a, input, dialog'));
+    if (overInteractive && reticleEl?.dataset.state !== 'photo') {
+      reticleEl.dataset.state = 'ui';
+    } else if (!overInteractive && reticleEl?.dataset.state === 'ui') {
+      delete reticleEl.dataset.state;
+    }
+  }, { passive: true });
+
+  document.addEventListener('pointerleave', () => {
+    reticleActive = false;
+    reticleEl?.classList.remove('visible');
+  });
+
+  document.querySelectorAll('.magnetic').forEach(btn => {
+    btn.addEventListener('pointerenter', () => {
+      btn.style.willChange = 'transform';
+    });
+    btn.addEventListener('pointermove', event => {
+      if (btn.disabled) return;
+      const rect = btn.getBoundingClientRect();
+      const dx = Math.max(-5, Math.min(5, (event.clientX - (rect.left + rect.width / 2)) * 0.22));
+      const dy = Math.max(-5, Math.min(5, (event.clientY - (rect.top + rect.height / 2)) * 0.22));
+      btn.style.transform = `translate3d(${dx.toFixed(1)}px, ${dy.toFixed(1)}px, 0)`;
+    });
+    btn.addEventListener('pointerleave', () => {
+      btn.style.transform = '';
+      btn.style.willChange = 'auto';
+    });
+  });
+}
+
+function updateReticleFrame() {
+  if (!reticleActive || !reticleEl) return;
+  reticleX += (reticleTargetX - reticleX) * 0.28;
+  reticleY += (reticleTargetY - reticleY) * 0.28;
+  reticleEl.style.transform = `translate3d(${reticleX.toFixed(1)}px, ${reticleY.toFixed(1)}px, 0)`;
+}
+
 try {
   universe = new PhotoUniverse($('scene'), {
     onPick: showPhoto,
@@ -604,12 +712,22 @@ try {
       const key = photos[photoIndex]?.spectralKey ?? 0.5;
       soundscape.playHoverTick(key);
     },
+    onHoverStateChange: ({ active, photoIndex }) => {
+      if (!reticleEl) return;
+      if (active && photos[photoIndex]) {
+        reticleEl.dataset.state = 'photo';
+        reticleEl.style.setProperty('--reticle-accent', photos[photoIndex].accentHex || '#c8a27c');
+      } else if (reticleEl.dataset.state === 'photo') {
+        delete reticleEl.dataset.state;
+      }
+    },
     onFocusChange: handleFocusChange,
     onModeChange: updateMode,
     onFilmProgress: syncFilmReadout,
     onFilmEnd: endFilm,
     onContextLost: contextLost,
     onFrame: time => {
+      updateReticleFrame();
       if (inspecting) profileFrame(time);
       if (universe) soundscape.update(universe.getAudioModulation());
     },
