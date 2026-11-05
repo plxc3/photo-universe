@@ -369,8 +369,8 @@ test('PhotoUniverse supports 2.25s stardust genesis, 3D in-situ camera gaze, liv
   assert.ok(O.focusPlate, 'hero plate is mounted in overlay scene');
   assert.ok(O.focusOverlayScene?.children.includes(O.focusPlate), 'hero plate renders in crisp post-bokeh overlay scene');
   assert.ok(O.focusPlate.userData.liquidMat, 'Monopo borderless liquid-displacement shader is attached');
-  assert.equal(O.focusPlate.geometry.parameters.widthSegments, 32, '32x24 subdivided silk mesh');
-  assert.equal(O.focusPlate.geometry.parameters.heightSegments, 24);
+  assert.equal(O.focusPlate.geometry.parameters.widthSegments, 48, '48x36 ultra-fine subdivided silk mesh');
+  assert.equal(O.focusPlate.geometry.parameters.heightSegments, 36);
   for (let t = 2350; t <= 3500; t += 50) O.animate(t);
   assert.equal(O.camera.fov, 42);
   assert.ok(O.photoUniforms.uFocusAmount.value > 0.95, 'surrounding cards dim via shader uniform');
@@ -868,4 +868,97 @@ test('PhotoUniverse supports Threshold Gate 1.8s optical rack-focus and in-stage
   assert.equal(O.photoUniforms.uFocusSlotHide.value, 0, 'instanced slot visibility restored cleanly');
 
   O.clearPhotos();
+});
+
+test('v7 Silk Motion Overhaul: zero-jerk facet peel, aspect-independent coverUv stepping, Frame-0 HD preload, and Hermite C1 camera handoff', () => {
+  const O = makeSceneHarness(1440, 900);
+  const photos = Array.from({ length: 8 }, (_, i) => ({
+    index: i,
+    url: `blob:hd-photo-${i}`,
+    spectralKey: i / 8,
+    width: i % 2 === 0 ? 1500 : 900,
+    height: i % 2 === 0 ? 1000 : 1200,
+  }));
+  const atlases = [{
+    canvas: { width: 2048, height: 2048 },
+    photoIndices: Array.from({ length: 8 }, (_, i) => i),
+  }];
+
+  const origImage = globalThis.Image;
+  class PreloadedMockImage {
+    constructor() {
+      this.decoding = 'async';
+      this.complete = false;
+      this.naturalWidth = 0;
+      this.naturalHeight = 0;
+      this._src = '';
+    }
+    set src(val) {
+      this._src = val;
+      const idx = Number(String(val).split('-').pop());
+      this.naturalWidth = idx % 2 === 0 ? 1500 : 900;
+      this.naturalHeight = idx % 2 === 0 ? 1000 : 1200;
+      this.complete = true;
+    }
+    get src() { return this._src; }
+    decode() { return Promise.resolve(); }
+  }
+  globalThis.Image = PreloadedMockImage;
+
+  try {
+    O.setPhotos(photos, atlases, 160, { genesis: false, threshold: true });
+    O.preloadFocusPhotos([0, 1]);
+    assert.equal(O._decodedPhotoImages?.size, 2, 'adjacent HD photos pre-decoded in memory cache');
+
+    // Start 1.8s threshold pull-back, advance to peak camera velocity at 800ms, then interrupt with focusPhoto!
+    assert.equal(O.unlockThreshold(), true);
+    let clock = 50;
+    for (; clock <= 800; clock += 50) O.animate(clock);
+    const velBeforeClick = O._camVel.clone();
+    assert.ok(velBeforeClick.length() > 2.0, 'camera has live momentum mid-unlock');
+    const posAtClick = O.camera.position.clone();
+
+    // Click preloaded landscape photo 0 mid-flight
+    assert.equal(O.focusPhoto(0, 0), true);
+    const lu = O.focusPlate.userData.liquidMat.uniforms;
+    assert.equal(O.focusState.plateReady, true, 'preloaded HD texture binds synchronously on Frame 0');
+    assert.ok(Math.abs(lu.uAspectCurr.value - 1.5) < 1e-4, 'Frame 0 binds true 3:2 HD aspect');
+    assert.equal(lu.uLiftProgress.value, 0, 'starts flush on 3D facet with uLiftProgress = 0');
+
+    // Advance single 16ms frame: verify C2 zero-jerk launch & Hermite C1 camera velocity preservation
+    O.animate((clock += 16));
+    assert.ok(
+      O.focusState.springValue > 0 && O.focusState.springValue < 0.015,
+      `C2 silkFlightEase launches gently without acceleration shock (got ${O.focusState.springValue})`,
+    );
+    const actualStepVec = O.camera.position.clone().sub(posAtClick).divideScalar(0.016);
+    assert.ok(
+      actualStepVec.dot(velBeforeClick) > 0,
+      'Hermite viewTransition preserves forward camera momentum instead of snapping backward',
+    );
+
+    for (; clock <= 1900; clock += 50) O.animate(clock);
+    assert.equal(O.focusState.springValue, 1);
+
+    // Step from 3:2 landscape (photo 0) to 3:4 portrait (photo 1): verify independent aspects
+    assert.equal(O.focusPhoto(1, -1, { flowDir: 1 }), true);
+    assert.ok(Math.abs(lu.uAspectPrev.value - 1.5) < 1e-4, 'outgoing landscape retains 1.5 aspect');
+    assert.ok(Math.abs(lu.uAspectCurr.value - 0.75) < 1e-4, 'incoming portrait binds 0.75 aspect immediately');
+    for (let i = 0; i < 6; i++) O.animate((clock += 50));
+    assert.ok(
+      lu.uPlateAspect.value > 0.80 && lu.uPlateAspect.value < 1.40,
+      `plate aspect morphs smoothly between 1.5 and 0.75 while coverUv prevents stretching (got ${lu.uPlateAspect.value})`,
+    );
+
+    // Close focus: verify zero-jerk contraction at +16ms
+    for (; clock <= 2900; clock += 50) O.animate(clock);
+    const scaleAtClose = O.focusPlate.scale.clone();
+    assert.equal(O.closeFocus(false), true);
+    O.animate((clock += 16));
+    const scaleDeltaRatio = O._closingPlate.mesh.scale.distanceTo(scaleAtClose) / scaleAtClose.length();
+    assert.ok(scaleDeltaRatio < 0.015, `closing contraction starts gently without 100ms collapse (${scaleDeltaRatio})`);
+  } finally {
+    globalThis.Image = origImage;
+    O.clearPhotos();
+  }
 });

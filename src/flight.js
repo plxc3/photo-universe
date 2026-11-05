@@ -141,9 +141,9 @@ export function sampleFlight(seconds, aspect = 16 / 9, startPose = null) {
   if (t < FILM.phase2End) {
     const u = (t - FILM.phase1) / (FILM.phase2End - FILM.phase1);
     const s = easeInOut(u);
-    const entry = easeInOut(Math.min(1, u / 0.20));
+    const entry = easeInOut(Math.min(1, u / 0.46));
     const e = envelope(s);
-    const z = 76 - 33 * entry - 41 * s;
+    const z = 76 - 26 * entry - 48 * s;
     const x = e * 1.65 * Math.sin(2.4 * Math.PI * u);
     const y = e * 1.15 * Math.cos(1.8 * Math.PI * u);
     const roll = 0.52 * e;

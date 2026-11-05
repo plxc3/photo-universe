@@ -111,6 +111,37 @@ function aspectScaleFactors(aspect) {
   return [clamp(root, 0.70, 1.04), clamp(1 / root, 0.96, 1.32)];
 }
 
+// C2 soft-launch, long velvet-out glide: zero initial velocity shock (f'(0) = 0)
+// and feathered zero-overshoot cushion landing (f'(1) = 0, max = 1.0).
+function silkFlightEase(value) {
+  const u = clamp(value, 0, 1);
+  return 1 - Math.pow(1 - u * u, 2.8);
+}
+
+// Matches the 3-point gallery chiaroscuro in the InstancedMesh fragment shader
+// so a clicked 3D crystal card never flashes in brightness on frame 0 of lift-off.
+function computeFacetSculptShade(worldNormal, tunnelFactor = 0) {
+  const nx = worldNormal?.x ?? 0;
+  const ny = worldNormal?.y ?? 0;
+  const nz = worldNormal?.z ?? 1;
+  // normalize(-0.48, 0.60, 0.64) = (-0.4800, 0.6000, 0.6400)
+  const keyLight = clamp(nx * -0.48 + ny * 0.60 + nz * 0.64, 0, 1);
+  // normalize(0.70, 0.22, -0.68) = (0.6996, 0.2199, -0.6796)
+  const rimLight = clamp(nx * 0.6996 + ny * 0.2199 + nz * -0.6796, 0, 1);
+  const skyFill = clamp(ny * 0.5 + 0.5, 0, 1);
+  const kPow = Math.pow(keyLight, 1.15);
+  const rPow = Math.pow(rimLight, 1.6);
+  const sx = 0.38 + 0.84 * kPow + 0.24 * rPow + 0.07 * skyFill;
+  const sy = 0.40 + 0.81 * kPow + 0.27 * rPow + 0.08 * skyFill;
+  const sz = 0.45 + 0.76 * kPow + 0.34 * rPow + 0.10 * skyFill;
+  const tf = clamp(tunnelFactor, 0, 1);
+  return new THREE.Vector3(
+    clamp(THREE.MathUtils.lerp(sx, 1.03, tf), 0.35, 1.12),
+    clamp(THREE.MathUtils.lerp(sy, 1.02, tf), 0.35, 1.12),
+    clamp(THREE.MathUtils.lerp(sz, 1.00, tf), 0.35, 1.12),
+  );
+}
+
 export class PhotoUniverse {
   constructor(container, {
     onPick,
@@ -676,6 +707,38 @@ export class PhotoUniverse {
     this.focusPlate = null;
   }
 
+  _zeroCameraVelocity() {
+    this._camVel?.set(0, 0, 0);
+    this._targetVel?.set(0, 0, 0);
+    this._fovVel = 0;
+  }
+
+  /**
+   * Background pre-decoder for adjacent gallery prints so Next/Prev switching
+   * binds full-HD textures synchronously on frame 0 with zero thumbnail pop.
+   */
+  preloadFocusPhotos(photoIndices = []) {
+    if (typeof Image === 'undefined' || !Array.isArray(photoIndices)) return;
+    const cache = (this._decodedPhotoImages ||= new Map());
+    for (const idx of photoIndices) {
+      const photo = this.photos?.[idx];
+      if (!photo?.url || cache.has(photo.url)) continue;
+      if (cache.size >= 18) {
+        const oldestKey = cache.keys().next().value;
+        if (oldestKey !== undefined) cache.delete(oldestKey);
+      }
+      const img = new Image();
+      img.decoding = 'async';
+      img.src = photo.url;
+      cache.set(photo.url, img);
+      if (typeof img.decode === 'function') {
+        img.decode().catch(() => {
+          if (cache.get(photo.url) === img) cache.delete(photo.url);
+        });
+      }
+    }
+  }
+
   _findBestInstanceForPhoto(photoIndex, preferredInstanceIndex = -1) {
     if (
       Number.isInteger(preferredInstanceIndex) &&
@@ -740,14 +803,14 @@ export class PhotoUniverse {
     this.thresholdState = null;
     this.flushDamping();
     if (this.parallaxGroup) {
+      // Smoothly relax pointer target to center without snapping parallaxGroup.rotation in 0ms
       this.pointerTarget?.set(0, 0);
-      this.pointerCurrent?.set(0, 0);
-      this.parallaxGroup.rotation.set(0, 0, 0);
     }
     if (this.instanceDirty) {
       if (this.morph?.scrollControlled) {
         if (this.scrollTimeline) {
           this.scrollTimeline.targetTime = this.scrollTimeline.currentTime;
+          this.scrollTimeline.timeVel = 0;
           this.scrollTimeline.resting = true;
         }
         this.updateInstanceTransforms(0);
@@ -781,7 +844,7 @@ export class PhotoUniverse {
     const photoMeta = this.photos?.[photoIndex];
     const uniforms = this.ensurePhotoUniforms();
 
-    // Seamless in-stage liquid crossfade when stepping while already in exhibition mode
+    // Seamless in-stage optical carriage transition when stepping while already in exhibition mode
     if (this.focusState && this.focusPlate) {
       const st = this.focusState;
       const heroScale = computeStageHeroScale(photoMeta);
@@ -804,19 +867,27 @@ export class PhotoUniverse {
         nextCardQuat.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), Math.PI));
       }
 
+      const nextStartAspect = (1.08 * Math.abs(nextCardScale.x)) / Math.max(1e-4, 0.72 * Math.abs(nextCardScale.y));
+      const nextShade = computeFacetSculptShade(stepNormal, uniforms.uTunnelMode?.value || 0);
+
       st.photoIndex = photoIndex;
       st.instanceIndex = instanceIndex;
       st.cardPos = nextCardPos;
       st.cardQuat = nextCardQuat;
       st.cardScale = nextCardScale;
       st.normal = stepNormal;
+      st.startAspect = nextStartAspect;
+      st.startShade = nextShade;
       st.scaleFrom = this.focusPlate.scale.clone();
       st.heroScale = heroScale;
+      st.scaleElapsed = 0;
+      st.scaleDuration = this.reducedMotion ? 0.001 : 0.76;
       st.scaleProgress = this.reducedMotion ? 1 : 0;
       st.scaleVel = 0;
       st.transitionElapsed = 0;
-      st.transitionDuration = this.reducedMotion ? 0.001 : 0.68;
-      st.curlBoost = this.reducedMotion ? 0 : 0.44 * flowDir;
+      st.transitionDuration = this.reducedMotion ? 0.001 : 0.80;
+      st.stepFlowDir = flowDir;
+      st.curlBoost = this.reducedMotion ? 0 : 0.34 * flowDir;
       st.wasStepping = true;
       st.hdDecoded = false;
       st.plateReady = false;
@@ -868,7 +939,7 @@ export class PhotoUniverse {
     }
 
     // Camera-Space 3D FLIP: keep camera horizon level & serene with a subtle 5.5%
-    // optical dolly breath while the card detaches & glides to center stage.
+    // optical dolly breath while the card peels smoothly off its facet to center stage.
     const levelUp = saved.up.lengthSq() > 0.25 ? saved.up.clone().normalize() : new THREE.Vector3(0, 1, 0);
     const camForward = this.controls.target.clone().sub(this.camera.position);
     const spanToTarget = camForward.length();
@@ -882,6 +953,15 @@ export class PhotoUniverse {
     const heroQuat = new THREE.Quaternion().setFromRotationMatrix(lookMat);
     const heroScale = computeStageHeroScale(photoMeta);
     const startAspect = (1.08 * Math.abs(cardScale.x)) / Math.max(1e-4, 0.72 * Math.abs(cardScale.y));
+    const startShade = computeFacetSculptShade(normal, uniforms.uTunnelMode?.value || 0);
+
+    // Leading-edge peel vector: corner closest to stage center leads the 3D silk lift
+    const stageRight = new THREE.Vector3(1, 0, 0).applyQuaternion(heroQuat);
+    const stageUp = new THREE.Vector3(0, 1, 0).applyQuaternion(heroQuat);
+    const toStage = heroPos.clone().sub(cardPos);
+    const peelDir = new THREE.Vector2(toStage.dot(stageRight), toStage.dot(stageUp));
+    if (peelDir.lengthSq() > 1e-4) peelDir.normalize();
+    else peelDir.set(0, 1);
 
     uniforms.uFocusWorld.value.copy(cardPos);
     uniforms.uFocusSlotHide.value = 1;
@@ -900,16 +980,23 @@ export class PhotoUniverse {
       heroScale,
       normal,
       cardUp: levelUp,
+      peelDir,
       startAspect,
+      startShade,
       hdDecoded: false,
       wasStepping: false,
       hdStartUv: new THREE.Vector4(0, 0, 1, 1),
+      flightElapsed: this.reducedMotion ? 0.88 : 0,
+      flightDuration: 0.88,
       springValue: this.reducedMotion ? 1 : 0,
       springVel: 0,
+      scaleElapsed: this.reducedMotion ? 0.88 : 0,
+      scaleDuration: 0.88,
       scaleProgress: this.reducedMotion ? 1 : 0,
       scaleVel: 0,
       transitionElapsed: 1,
-      transitionDuration: 0.68,
+      transitionDuration: 0.80,
+      stepFlowDir: 1,
       curlBoost: 0,
       saved,
       plateReady: false,
@@ -929,11 +1016,12 @@ export class PhotoUniverse {
       this.camera.up.copy(levelUp);
       this.camera.fov = GAZE_FOV;
       this.viewTransition = null;
+      this._zeroCameraVelocity?.();
       uniforms.uFocusAmount.value = 1;
     } else {
       this.viewTransition = {
         elapsed: 0,
-        duration: 0.88,
+        duration: 0.92,
         fromPosition: this.camera.position.clone(),
         position: camDest,
         fromTarget: this.controls.target.clone(),
@@ -946,6 +1034,9 @@ export class PhotoUniverse {
         rotation: this.group.quaternion.clone(),
         fromOffset,
         toOffset: { x: 0, y: 0 },
+        velPosition: this._camVel ? this._camVel.clone() : null,
+        velTarget: this._targetVel ? this._targetVel.clone() : null,
+        velFov: this._fovVel || 0,
       };
     }
     this.camera.lookAt(this.controls.target);
@@ -967,7 +1058,7 @@ export class PhotoUniverse {
     this.focusOverlayScene ||= new THREE.Scene();
 
     if (!this.focusPlate) {
-      const geometry = new THREE.PlaneGeometry(1.08, 0.72, 32, 24);
+      const geometry = new THREE.PlaneGeometry(1.08, 0.72, 48, 36);
       const blankTex = this._getBlankFocusTexture();
       const liquidMat = new THREE.ShaderMaterial({
         transparent: true,
@@ -980,6 +1071,12 @@ export class PhotoUniverse {
           uTexCurr: { value: blankTex },
           uUvRectPrev: { value: new THREE.Vector4(0, 0, 1, 1) },
           uUvRectCurr: { value: new THREE.Vector4(0, 0, 1, 1) },
+          uAspectPrev: { value: 1.5 },
+          uAspectCurr: { value: 1.5 },
+          uPlateAspect: { value: 1.5 },
+          uLiftProgress: { value: 1 },
+          uPeelDir: { value: new THREE.Vector2(0, 1) },
+          uStartShade: { value: new THREE.Vector3(1, 1, 1) },
           uMix: { value: 1 },
           uFlowDir: { value: 1 },
           uCurl: { value: 0 },
@@ -990,17 +1087,35 @@ export class PhotoUniverse {
         vertexShader: `
           uniform float uCurl;
           uniform vec2 uTilt;
+          uniform float uLiftProgress;
+          uniform vec2 uPeelDir;
           varying vec2 vUv;
           varying float vSheen;
           void main() {
             vUv = uv;
             vec3 pos = position;
             vec2 centered = uv - vec2(0.5);
-            float archX = (centered.x * centered.x - 0.0833) * uCurl * 0.42;
-            float waveY = sin(centered.y * 3.14159265) * uCurl * 0.11;
-            float hoverZ = (centered.x * uTilt.x - centered.y * uTilt.y) * 0.075;
-            pos.z += hoverZ - archX + waveY;
-            vSheen = clamp(0.5 + (centered.x * 0.85 + centered.y * 0.55) + (uTilt.x * 0.65 - uTilt.y * 0.45) + uCurl * 0.35, 0.0, 1.0);
+
+            // Organic Leading-Edge Paper Peel during 3D lift-off & return (0 at endpoints)
+            float lp = clamp(uLiftProgress, 0.0, 1.0);
+            float flightEnv = sin(lp * 3.14159265);
+            float peelLead = dot(centered, uPeelDir) * flightEnv * 0.22;
+            float silkCamber = (0.16 - (centered.x * centered.x * 0.82 + centered.y * centered.y * 0.54)) * flightEnv * 0.28;
+
+            // Gentle ribbon flex during photo carriage step + optical hover tilt
+            float archX = (centered.x * centered.x - 0.0833) * uCurl * 0.28;
+            float waveY = sin(centered.y * 3.14159265) * uCurl * 0.075;
+            float hoverZ = (centered.x * uTilt.x - centered.y * uTilt.y) * 0.065 * lp;
+
+            pos.z += hoverZ + peelLead + silkCamber - archX + waveY;
+            vSheen = clamp(
+              0.5 + (centered.x * 0.85 + centered.y * 0.55)
+              + (uTilt.x * 0.65 - uTilt.y * 0.45) * lp
+              + uCurl * 0.30
+              + peelLead * 1.15,
+              0.0,
+              1.0
+            );
             gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
           }
         `,
@@ -1009,6 +1124,11 @@ export class PhotoUniverse {
           uniform sampler2D uTexCurr;
           uniform vec4 uUvRectPrev;
           uniform vec4 uUvRectCurr;
+          uniform float uAspectPrev;
+          uniform float uAspectCurr;
+          uniform float uPlateAspect;
+          uniform float uLiftProgress;
+          uniform vec3 uStartShade;
           uniform float uMix;
           uniform float uFlowDir;
           uniform float uOpacity;
@@ -1016,28 +1136,69 @@ export class PhotoUniverse {
           varying vec2 vUv;
           varying float vSheen;
 
+          vec2 coverUv(vec2 uv, float imgAspect, float plateAspect) {
+            float safeImg = max(0.05, imgAspect);
+            float safePlate = max(0.05, plateAspect);
+            vec2 c = uv - vec2(0.5);
+            if (safePlate > safeImg) {
+              c.y *= safeImg / safePlate;
+            } else {
+              c.x *= safePlate / safeImg;
+            }
+            return c + vec2(0.5);
+          }
+
           vec2 mapRect(vec2 uv, vec4 rect) {
             return rect.xy + clamp(uv, 0.001, 0.999) * rect.zw;
           }
 
           void main() {
             float t = clamp(uMix, 0.0, 1.0);
-            float env = sin(t * 3.14159265);
-            float rippleA = sin(vUv.y * 7.0 + uTime * 2.2) * cos(vUv.x * 5.0 - uTime * 1.6);
-            float rippleB = sin((vUv.x + vUv.y) * 9.5 - uTime * 2.6) * 0.5;
-            float lens = (0.078 + 0.036 * rippleA + 0.018 * rippleB) * env;
-            vec2 disp = vec2(uFlowDir * lens, (rippleA * 0.022 + rippleB * 0.014) * env);
+            vec3 col;
 
-            vec2 uvPrev = vUv + disp * t;
-            vec2 uvCurr = vUv - disp * (1.0 - t);
+            if (t >= 0.9995) {
+              vec2 uvC = coverUv(vUv, uAspectCurr, uPlateAspect);
+              col = texture2D(uTexCurr, mapRect(uvC, uUvRectCurr)).rgb;
+            } else if (t <= 0.0005) {
+              vec2 uvP = coverUv(vUv, uAspectPrev, uPlateAspect);
+              col = texture2D(uTexPrev, mapRect(uvP, uUvRectPrev)).rgb;
+            } else {
+              // Counter-parallax optical film carriage + curved glass curtain (zero 50/50 ghosting & zero stretch)
+              float p = t * t * (3.0 - 2.0 * t);
+              float env = sin(p * 3.14159265);
 
-            vec4 colPrev = texture2D(uTexPrev, mapRect(uvPrev, uUvRectPrev));
-            vec4 colCurr = texture2D(uTexCurr, mapRect(uvCurr, uUvRectCurr));
+              float coord = (uFlowDir > 0.0 ? (1.0 - vUv.x) : vUv.x) * 0.86 + (1.0 - vUv.y) * 0.14;
+              float wave = sin(vUv.y * 3.14159265) * 0.045 * env;
+              float w = 0.34;
+              float threshold = p * (1.0 + 2.0 * w) - w;
+              float mask = smoothstep(coord - w + wave, coord + w + wave, threshold);
+              float frontEnv = 4.0 * mask * (1.0 - mask);
 
-            float blend = smoothstep(0.0, 1.0, t);
-            vec3 col = mix(colPrev.rgb, colCurr.rgb, blend);
-            col *= 1.0 + env * 0.065;
-            float sheen = pow(clamp(1.0 - abs(vSheen - 0.52) * 2.1, 0.0, 1.0), 3.0) * 0.032;
+              // Zoom margin strictly bounds parallax + glass refraction so edges never clamp-streak
+              float zoomPrev = 1.0 + 0.135 * p;
+              float zoomCurr = 1.0 + 0.135 * (1.0 - p);
+              float refractX = uFlowDir * 0.016 * frontEnv * env;
+              float refractY = sin(vUv.y * 6.2831853 + uTime * 1.8) * 0.006 * frontEnv * env;
+
+              vec2 basePrev = coverUv(vUv, uAspectPrev, uPlateAspect);
+              vec2 baseCurr = coverUv(vUv, uAspectCurr, uPlateAspect);
+
+              vec2 uvPrev = (basePrev - vec2(0.5)) / zoomPrev + vec2(0.5) + vec2(uFlowDir * 0.052 * p + refractX, refractY);
+              vec2 uvCurr = (baseCurr - vec2(0.5)) / zoomCurr + vec2(0.5) + vec2(-uFlowDir * 0.052 * (1.0 - p) - refractX, -refractY);
+
+              vec3 colPrev = texture2D(uTexPrev, mapRect(uvPrev, uUvRectPrev)).rgb * (1.0 - 0.22 * p);
+              vec3 colCurr = texture2D(uTexCurr, mapRect(uvCurr, uUvRectCurr)).rgb;
+
+              col = mix(colPrev, colCurr, mask);
+              col += vec3(1.0, 0.97, 0.92) * (frontEnv * env * 0.038);
+            }
+
+            // Continuous lighting development from 3D crystal facet shade -> pure exhibition light
+            float shadeBlend = smoothstep(0.0, 0.62, clamp(uLiftProgress, 0.0, 1.0));
+            vec3 facetShade = mix(uStartShade, vec3(1.0), shadeBlend);
+            col *= facetShade;
+
+            float sheen = pow(clamp(1.0 - abs(vSheen - 0.52) * 2.1, 0.0, 1.0), 3.0) * 0.028;
             col += vec3(1.0, 0.97, 0.92) * sheen;
 
             vec2 edge = min(vUv, vec2(1.0) - vUv);
@@ -1057,6 +1218,7 @@ export class PhotoUniverse {
       this.focusOverlayScene.add(this.focusPlate);
     }
 
+    const st = this.focusState;
     const liquidMat = this.focusPlate.userData.liquidMat;
     const u = liquidMat.uniforms;
     const blankTex = this._getBlankFocusTexture();
@@ -1074,12 +1236,19 @@ export class PhotoUniverse {
       rectH = atlasRectAttr.array[base + 3];
     }
 
+    const tileAspect = st?.startAspect || 1.5;
+    if (st?.startShade) u.uStartShade.value.copy(st.startShade);
+    if (st?.peelDir) u.uPeelDir.value.copy(st.peelDir);
+
     const oldPrev = u.uTexPrev.value;
     if (stepping && !this.reducedMotion) {
       u.uTexPrev.value = u.uTexCurr.value || blankTex;
       u.uUvRectPrev.value.copy(u.uUvRectCurr.value);
+      u.uAspectPrev.value = u.uAspectCurr.value || 1.5;
       u.uTexCurr.value = nextPreviewTex;
       u.uUvRectCurr.value.set(rectX, rectY, rectW, rectH);
+      u.uAspectCurr.value = tileAspect;
+      u.uLiftProgress.value = 1;
       u.uFlowDir.value = flowDir >= 0 ? 1 : -1;
       u.uMix.value = 0;
       u.uOpacity.value = 1;
@@ -1088,8 +1257,12 @@ export class PhotoUniverse {
       const oldCurr = u.uTexCurr.value;
       u.uTexPrev.value = nextPreviewTex;
       u.uUvRectPrev.value.set(rectX, rectY, rectW, rectH);
+      u.uAspectPrev.value = tileAspect;
       u.uTexCurr.value = nextPreviewTex;
       u.uUvRectCurr.value.set(rectX, rectY, rectW, rectH);
+      u.uAspectCurr.value = tileAspect;
+      u.uPlateAspect.value = tileAspect;
+      u.uLiftProgress.value = this.reducedMotion ? 1 : 0;
       u.uMix.value = 1;
       u.uOpacity.value = sharedMap ? 1 : 0;
       u.uCurl.value = 0;
@@ -1103,36 +1276,34 @@ export class PhotoUniverse {
 
     const photo = this.photos?.[photoIndex];
     if (!photo?.url || typeof Image === 'undefined') return;
-    const img = new Image();
-    img.decoding = 'async';
-    img.src = photo.url;
-    const finishDecode = () => {
+    const cache = (this._decodedPhotoImages ||= new Map());
+    let img = cache.get(photo.url);
+    if (!img) {
+      img = new Image();
+      img.decoding = 'async';
+      img.src = photo.url;
+      if (cache.size >= 18) {
+        const oldestKey = cache.keys().next().value;
+        if (oldestKey !== undefined) cache.delete(oldestKey);
+      }
+      cache.set(photo.url, img);
+    }
+
+    const applyDecodedTexture = () => {
       if (generation !== this.focusGeneration || !this.focusState || !this.focusPlate) return;
-      const st = this.focusState;
+      const curSt = this.focusState;
       if (img.naturalWidth > 0 && img.naturalHeight > 0 && (!photo.width || !photo.height)) {
         photo.width = img.naturalWidth;
         photo.height = img.naturalHeight;
-        st.scaleFrom = this.focusPlate.scale.clone();
-        st.heroScale.copy(st.computeStageHeroScale(photo));
-        st.scaleProgress = this.reducedMotion ? 1 : 0;
-        st.scaleVel = 0;
+        curSt.scaleFrom = this.focusPlate.scale.clone();
+        curSt.heroScale.copy(curSt.computeStageHeroScale(photo));
+        curSt.scaleElapsed = this.reducedMotion ? curSt.scaleDuration : 0;
+        curSt.scaleProgress = this.reducedMotion ? 1 : 0;
       }
       const nativeAspect = img.naturalWidth > 0 && img.naturalHeight > 0
         ? img.naturalWidth / img.naturalHeight
         : (photo.width > 0 && photo.height > 0 ? photo.width / photo.height : 1.5);
-      const boxAspect = st.startAspect || 1.5;
-      if (!st.wasStepping && Math.abs(nativeAspect - boxAspect) > 0.015) {
-        if (nativeAspect > boxAspect) {
-          const w = boxAspect / nativeAspect;
-          st.hdStartUv.set((1 - w) * 0.5, 0, w, 1);
-        } else {
-          const h = nativeAspect / boxAspect;
-          st.hdStartUv.set(0, (1 - h) * 0.5, 1, h);
-        }
-      } else {
-        st.hdStartUv.set(0, 0, 1, 1);
-      }
-      st.hdDecoded = true;
+      curSt.hdDecoded = true;
       const texture = new THREE.Texture(img);
       texture.colorSpace = THREE.SRGBColorSpace;
       texture.needsUpdate = true;
@@ -1140,31 +1311,31 @@ export class PhotoUniverse {
       this.focusPlateOwnedTexture = texture;
       const replacedCurr = u.uTexCurr.value;
       u.uTexCurr.value = texture;
-      const prog = clamp(st.scaleProgress ?? 1, 0, 1);
-      if (!st.wasStepping && !this.reducedMotion) {
-        u.uUvRectCurr.value.set(
-          THREE.MathUtils.lerp(st.hdStartUv.x, 0, prog),
-          THREE.MathUtils.lerp(st.hdStartUv.y, 0, prog),
-          THREE.MathUtils.lerp(st.hdStartUv.z, 1, prog),
-          THREE.MathUtils.lerp(st.hdStartUv.w, 1, prog),
-        );
-      } else {
-        u.uUvRectCurr.value.set(0, 0, 1, 1);
+      u.uUvRectCurr.value.set(0, 0, 1, 1);
+      u.uAspectCurr.value = nativeAspect;
+      if (!stepping) {
+        u.uTexPrev.value = texture;
+        u.uUvRectPrev.value.set(0, 0, 1, 1);
+        u.uAspectPrev.value = nativeAspect;
       }
       u.uOpacity.value = 1;
       this._releaseOwnedFocusTexture(replacedCurr, u.uTexPrev.value, u.uTexCurr.value);
-      st.plateReady = true;
+      curSt.plateReady = true;
     };
-    if (typeof img.decode === 'function') {
-      img.decode().then(finishDecode).catch(() => {});
+
+    // If preloaded/cached in browser memory, bind full-HD texture synchronously on Frame 0!
+    if (img.complete && img.naturalWidth > 0) {
+      applyDecodedTexture();
+    } else if (typeof img.decode === 'function') {
+      img.decode().then(applyDecodedTexture).catch(() => {});
     } else {
-      img.onload = finishDecode;
+      img.onload = applyDecodedTexture;
     }
   }
 
   closeFocus(instant = false, notify = true) {
     if (!this.focusState) return false;
-    const { saved, cardPos, cardQuat, cardScale, hdDecoded, hdStartUv } = this.focusState;
+    const { saved, cardPos, cardQuat, cardScale, normal, startShade } = this.focusState;
     this.focusState = null;
     this.focusGeneration = (this.focusGeneration || 0) + 1;
     this.focusPointerTarget?.set(0, 0);
@@ -1177,6 +1348,7 @@ export class PhotoUniverse {
       uniforms.uFocusWorld.value.copy(cardPos);
       uniforms.uFocusSlotHide.value = 1;
       const lu = this.focusPlate.userData?.liquidMat?.uniforms;
+      if (lu && startShade) lu.uStartShade.value.copy(startShade);
       this._closingPlate = {
         mesh: this.focusPlate,
         fromPos: this.focusPlate.position.clone(),
@@ -1185,10 +1357,9 @@ export class PhotoUniverse {
         toQuat: (cardQuat || this.focusPlate.quaternion).clone(),
         fromScale: this.focusPlate.scale.clone(),
         toScale: cardScale.clone(),
-        fromUv: lu?.uUvRectCurr?.value ? lu.uUvRectCurr.value.clone() : null,
-        toUv: hdDecoded && hdStartUv ? hdStartUv.clone() : null,
+        normal: normal ? normal.clone() : null,
         elapsed: 0,
-        duration: 0.56,
+        duration: 0.66,
       };
       this.focusPlate = null;
       this.focusPlateOwnedTexture = null;
@@ -1211,12 +1382,13 @@ export class PhotoUniverse {
       this.camera.fov = saved.fov;
       this.group.quaternion.copy(saved.rotation);
       this.viewTransition = null;
+      this._zeroCameraVelocity?.();
       uniforms.uFocusAmount.value = 0;
       this.alignIdlePhase();
     } else {
       this.viewTransition = {
         elapsed: 0,
-        duration: 0.95,
+        duration: 0.92,
         fromPosition: this.camera.position.clone(),
         position: saved.position.clone(),
         fromTarget: this.controls.target.clone(),
@@ -1229,6 +1401,9 @@ export class PhotoUniverse {
         rotation: saved.rotation.clone(),
         fromOffset: { x: 0, y: 0 },
         toOffset: saved.offset,
+        velPosition: this._camVel ? this._camVel.clone() : null,
+        velTarget: this._targetVel ? this._targetVel.clone() : null,
+        velFov: this._fovVel || 0,
       };
     }
     this.camera.lookAt(this.controls.target);
@@ -1249,6 +1424,7 @@ export class PhotoUniverse {
       if (this.controls) this.controls.enabled = true;
     }
     this.thresholdState = null;
+    this._decodedPhotoImages?.clear();
     this._disposeClosingPlate();
     this._disposeFocusPlate();
     for (const mesh of this.meshes) {
@@ -1574,6 +1750,10 @@ export class PhotoUniverse {
       rotation: restQuat,
       fromOffset: fromOff,
       toOffset: restOff,
+      velPosition: this._camVel ? this._camVel.clone() : null,
+      velTarget: this._targetVel ? this._targetVel.clone() : null,
+      velFov: this._fovVel || 0,
+      allowIdleSpin: true,
     };
     this.defaultView = true;
     return true;
@@ -1837,6 +2017,7 @@ export class PhotoUniverse {
       this.alignIdlePhase();
       this.camera.fov = fov;
       this.viewTransition = null;
+      this._zeroCameraVelocity();
     } else this.viewTransition = {
       elapsed: 0, duration: 2.2,
       fromPosition: this.camera.position.clone(), position: new THREE.Vector3(...position),
@@ -1844,6 +2025,9 @@ export class PhotoUniverse {
       fromUp: this.camera.up.clone(), fromFov: this.camera.fov, fov,
       fromRotation: this.group.quaternion.clone(), rotation,
       fromOffset: this.camera.view?.enabled ? { x: this.camera.view.offsetX / this.camera.view.fullWidth, y: this.camera.view.offsetY / this.camera.view.fullHeight } : { x: 0, y: 0 },
+      velPosition: this._camVel ? this._camVel.clone() : null,
+      velTarget: this._targetVel ? this._targetVel.clone() : null,
+      velFov: this._fovVel || 0,
     };
     this.camera.lookAt(this.controls.target);
     this.camera.updateProjectionMatrix();
@@ -2038,6 +2222,7 @@ export class PhotoUniverse {
       this.scrollTimeline = {
         currentTime: clamped,
         targetTime: clamped,
+        timeVel: 0,
         startPose,
         startRingAngles: [0, 0, 0, 0],
         lookYaw: 0,
@@ -2054,6 +2239,7 @@ export class PhotoUniverse {
     this.scrollTimeline.resting = false;
     if (immediate || this.reducedMotion) {
       this.scrollTimeline.currentTime = clamped;
+      this.scrollTimeline.timeVel = 0;
       this._applyScrollTimelinePose(clamped, 0);
     }
     return clamped;
@@ -2159,14 +2345,37 @@ export class PhotoUniverse {
   updateScrollTimeline(dt) {
     const st = this.scrollTimeline;
     if (!st || this.focusState || st.resting) return;
-    const factor = this.reducedMotion ? 1 : 1 - Math.exp(-dt * 9.5);
-    st.currentTime = THREE.MathUtils.lerp(st.currentTime, st.targetTime, factor);
+    if (this.reducedMotion) {
+      st.currentTime = st.targetTime;
+      st.timeVel = 0;
+    } else {
+      // Critically-damped 2nd-order inertia (zeta = 1.0, omega = 13.5):
+      // eliminates discrete mouse-wheel step shock while preserving reversible precision.
+      const omega = 13.5;
+      const k = omega * omega;
+      const c = 2 * omega;
+      const substeps = Math.max(1, Math.ceil(dt / 0.008));
+      const h = dt / substeps;
+      let x = st.currentTime;
+      let v = st.timeVel || 0;
+      for (let i = 0; i < substeps; i++) {
+        const acc = (st.targetTime - x) * k - v * c;
+        v += acc * h;
+        x += v * h;
+      }
+      st.currentTime = clamp(x, 0, FILM.total - 0.02);
+      st.timeVel = v;
+    }
     const timeDiff = Math.abs(st.targetTime - st.currentTime);
-    if (timeDiff < 1e-4) st.currentTime = st.targetTime;
+    const velSettled = Math.abs(st.timeVel || 0) < 1e-3;
+    if (timeDiff < 1e-4 && velSettled) {
+      st.currentTime = st.targetTime;
+      st.timeVel = 0;
+    }
     this._applyScrollTimelinePose(st.currentTime, dt);
     const yawDiff = Math.abs(st.targetYaw - st.lookYaw);
     const pitchDiff = Math.abs(st.targetPitch - st.lookPitch);
-    if (timeDiff < 1e-4 && yawDiff < 1e-4 && pitchDiff < 1e-4) {
+    if (timeDiff < 1e-4 && velSettled && yawDiff < 1e-4 && pitchDiff < 1e-4) {
       st.lookYaw = st.targetYaw;
       st.lookPitch = st.targetPitch;
       st.resting = true;
@@ -2427,17 +2636,31 @@ export class PhotoUniverse {
       }
     }
 
+    const camBefore = (this._camBefore ||= new THREE.Vector3()).copy(this.camera.position);
+    const targetBefore = (this._targetBefore ||= new THREE.Vector3()).copy(this.controls.target);
+    const fovBefore = this.camera.fov;
+
     if (this.film) {
       if (!this.film.manual) this.updateFilm(time);
+      this._idleVelScale = 0;
     } else if (this.scrollTimeline && !this.focusState && !this.viewTransition) {
       this.updateScrollTimeline(dt);
+      this._idleVelScale = 0;
     } else {
+      let allowIdleDuringView = false;
       if (this.viewTransition) {
         const view = this.viewTransition;
+        allowIdleDuringView = Boolean(view.allowIdleSpin);
         view.elapsed = Math.min(view.duration, view.elapsed + dt);
-        const progress = easeInOut(view.elapsed / view.duration);
+        const u = clamp(view.elapsed / Math.max(1e-6, view.duration), 0, 1);
+        const progress = easeInOut(u);
+        const hermiteH10 = u * (1 - u) * (1 - u) * view.duration;
+
         this.camera.position.lerpVectors(view.fromPosition, view.position, progress);
+        if (view.velPosition) this.camera.position.addScaledVector(view.velPosition, hermiteH10);
         this.controls.target.lerpVectors(view.fromTarget, view.target, progress);
+        if (view.velTarget) this.controls.target.addScaledVector(view.velTarget, hermiteH10);
+
         if (view.up) {
           this.camera.up.copy(view.fromUp).lerp(view.up, progress).normalize();
         } else {
@@ -2445,38 +2668,69 @@ export class PhotoUniverse {
           this.camera.up.y += progress;
           this.camera.up.normalize();
         }
-        this.group.quaternion.slerpQuaternions(view.fromRotation, view.rotation, progress);
-        this.camera.fov = THREE.MathUtils.lerp(view.fromFov, view.fov, progress);
+        if (!allowIdleDuringView) {
+          this.group.quaternion.slerpQuaternions(view.fromRotation, view.rotation, progress);
+        }
+        this.camera.fov = THREE.MathUtils.lerp(view.fromFov, view.fov, progress) + (view.velFov || 0) * hermiteH10;
         this.camera.lookAt(this.controls.target);
         this.camera.updateProjectionMatrix();
         this.applyViewOffset();
         if (view.elapsed === view.duration) {
           this.viewTransition = null;
-          if (!this.focusState) this.alignIdlePhase();
+          if (!this.focusState && !allowIdleDuringView) this.alignIdlePhase();
         }
       }
-      else if (this.running && !this.focusState) {
-        this.elapsed += dt * this.speed;
+
+      const canSpinIdle = this.running
+        && !this.focusState
+        && !this._closingPlate
+        && (!this.viewTransition || allowIdleDuringView);
+      const targetVelScale = canSpinIdle ? 1 : 0;
+      this._idleVelScale = this.reducedMotion
+        ? targetVelScale
+        : THREE.MathUtils.lerp(
+          this._idleVelScale ?? (canSpinIdle && !allowIdleDuringView ? 1 : 0),
+          targetVelScale,
+          1 - Math.exp(-dt * 2.8),
+        );
+
+      if (canSpinIdle && this._idleVelScale > 1e-4) {
+        const dtSpin = dt * this.speed * this._idleVelScale;
+        this.elapsed += dtSpin;
         if (this.mode === 'tunnel') {
-          this.group.rotation.z += dt * this.speed * 0.035;
+          this.group.rotation.z += dtSpin * 0.035;
         } else {
           const portrait = this.mode === 'orbit' ? (this.formationPortrait || 0) : 0;
-          this.idleYawElapsed = (this.idleYawElapsed || 0) + dt * this.speed;
-          this.group.rotation.y += dt * this.speed * (0.085 * (1 - portrait) + 0.018 * portrait * Math.cos(this.idleYawElapsed * 0.2));
+          this.idleYawElapsed = (this.idleYawElapsed || 0) + dtSpin;
+          this.group.rotation.y += dtSpin * (0.085 * (1 - portrait) + 0.018 * portrait * Math.cos(this.idleYawElapsed * 0.2));
           this.idleTiltOffset = (this.idleTiltOffset || 0) * Math.exp(-dt * 1.5);
           this.group.rotation.x = (this.idleBaseTilt || 0) + Math.sin(this.elapsed * OSC_OMEGA) * OSC_AMP + this.idleTiltOffset;
           if (this.mode === 'orbit' && !this.instanceDirty && !this.reducedMotion && this.instances.length) {
             const current = this.ringAngles || [0, 0, 0, 0];
-            this.ringAngles = current.map((angle, r) => angle + dt * this.speed * IDLE_RING_RATES[r]);
+            this.ringAngles = current.map((angle, r) => angle + dtSpin * IDLE_RING_RATES[r]);
           }
         }
       }
       if (!this.focusState && !this.scrollTimeline) this.controls.update();
     }
+
+    if (dt > 1e-4 && rawDeltaMs > 0) {
+      const invDt = 1 / dt;
+      const camVel = (this._camVel ||= new THREE.Vector3())
+        .subVectors(this.camera.position, camBefore)
+        .multiplyScalar(invDt);
+      if (camVel.lengthSq() > 14400) camVel.setLength(120);
+      const targetVel = (this._targetVel ||= new THREE.Vector3())
+        .subVectors(this.controls.target, targetBefore)
+        .multiplyScalar(invDt);
+      if (targetVel.lengthSq() > 14400) targetVel.setLength(120);
+      this._fovVel = clamp((this.camera.fov - fovBefore) * invDt, -90, 90);
+    }
+
     if (this.parallaxGroup) {
       const allowed = this.pointerEnabled && !this.reducedMotion && !this.dragging && !this.film && !this.focusState;
       if (!allowed) this.pointerTarget.set(0, 0);
-      if (this.reducedMotion || this.film || this.focusState) {
+      if (this.reducedMotion || this.film) {
         this.pointerCurrent.set(0, 0);
         this._dragBankTarget = 0;
         this._dragBankCurrent = 0;
@@ -2530,70 +2784,89 @@ export class PhotoUniverse {
     if (this.focusPlate && this.focusState) {
       const st = this.focusState;
       if (this.reducedMotion) {
+        st.flightElapsed = st.flightDuration || 0.88;
         st.springValue = 1;
         st.springVel = 0;
+        st.scaleElapsed = st.scaleDuration || 0.88;
         st.scaleProgress = 1;
         st.scaleVel = 0;
-        st.transitionElapsed = st.transitionDuration;
+        st.transitionElapsed = st.transitionDuration || 0.80;
         st.curlBoost = 0;
+        st.carriageShift = 0;
+        st.carriageDepth = 0;
+        st.carriageYaw = 0;
       } else {
-        // Critically-damped silk glide (zeta = 1.0, zero overshoot bounce)
-        const substeps = Math.max(1, Math.ceil(dt / 0.008));
-        const h = dt / substeps;
-        const kPos = 148;
-        const cPos = 24.33;
-        for (let i = 0; i < substeps; i++) {
-          const acc = (1 - st.springValue) * kPos - st.springVel * cPos;
-          st.springVel += acc * h;
-          st.springValue += st.springVel * h;
-          const sAcc = (1 - st.scaleProgress) * kPos - st.scaleVel * cPos;
-          st.scaleVel += sAcc * h;
-          st.scaleProgress += st.scaleVel * h;
-        }
-        if (Math.abs(1 - st.springValue) < 4e-5 && Math.abs(st.springVel) < 1e-3) {
-          st.springValue = 1;
-          st.springVel = 0;
-        }
-        if (Math.abs(1 - st.scaleProgress) < 4e-5 && Math.abs(st.scaleVel) < 1e-3) {
-          st.scaleProgress = 1;
-          st.scaleVel = 0;
-        }
-        st.transitionElapsed = Math.min(st.transitionDuration, (st.transitionElapsed ?? 1) + dt);
-        st.curlBoost = (st.curlBoost || 0) * Math.exp(-dt * 6.5);
+        // C2 zero-jerk Silk Flight Ease: f(0)=0, f'(0)=0 (soft facet peel-off),
+        // f(1)=1, f'(1)=0 (feathered museum landing, zero overshoot bounce).
+        st.flightElapsed = Math.min(st.flightDuration || 0.88, (st.flightElapsed ?? 0) + dt);
+        st.springValue = st.wasStepping
+          ? 1
+          : silkFlightEase(st.flightElapsed / Math.max(1e-6, st.flightDuration || 0.88));
+        st.scaleElapsed = Math.min(st.scaleDuration || 0.88, (st.scaleElapsed ?? 0) + dt);
+        st.scaleProgress = silkFlightEase(st.scaleElapsed / Math.max(1e-6, st.scaleDuration || 0.88));
+        st.transitionElapsed = Math.min(st.transitionDuration || 0.80, (st.transitionElapsed ?? 1) + dt);
       }
 
       const p = clamp(st.springValue, 0, 1);
+      const mixRaw = clamp((st.transitionElapsed ?? 1) / Math.max(1e-6, st.transitionDuration || 0.80), 0, 1);
+      const mixEased = silkFlightEase(mixRaw);
+
       this.focusPlate.position.lerpVectors(st.cardPos, st.heroPos, p);
       if (st.normal && p > 0 && p < 1) {
-        const liftSpan = Math.min(1.25, st.cardPos.distanceTo(st.heroPos) * 0.042);
-        const liftArc = Math.sin(p * Math.PI) * (1 - p * 0.35) * liftSpan;
+        const liftSpan = Math.min(1.25, st.cardPos.distanceTo(st.heroPos) * 0.045);
+        const liftArc = Math.sin(p * Math.PI) * (1 - p * 0.28) * liftSpan;
         this.focusPlate.position.addScaledVector(st.normal, liftArc);
       }
       if (st.cardQuat && st.heroQuat) {
         this.focusPlate.quaternion.slerpQuaternions(st.cardQuat, st.heroQuat, p);
       }
+
+      // Subtle 3D optical carriage glide when stepping between prints in-stage
+      const stepEnv = st.wasStepping && !this.reducedMotion ? Math.sin(mixEased * Math.PI) : 0;
+      const flow = st.stepFlowDir || 1;
+      const targetShift = -flow * 0.12 * stepEnv;
+      const targetDepth = 0.22 * stepEnv;
+      const targetYaw = -flow * 0.026 * stepEnv;
+      const carriageAlpha = this.reducedMotion ? 1 : 1 - Math.exp(-dt * 22);
+      st.carriageShift = THREE.MathUtils.lerp(st.carriageShift || 0, targetShift, carriageAlpha);
+      st.carriageDepth = THREE.MathUtils.lerp(st.carriageDepth || 0, targetDepth, carriageAlpha);
+      st.carriageYaw = THREE.MathUtils.lerp(st.carriageYaw || 0, targetYaw, carriageAlpha);
+      if (mixRaw >= 1 && Math.abs(st.carriageShift) < 4e-4 && Math.abs(st.carriageDepth) < 4e-4 && Math.abs(st.carriageYaw) < 4e-4) {
+        st.carriageShift = 0;
+        st.carriageDepth = 0;
+        st.carriageYaw = 0;
+      }
+      if (Math.abs(st.carriageShift) > 0 || Math.abs(st.carriageDepth) > 0) {
+        const stageRight = (this._stepRightVec ||= new THREE.Vector3()).set(1, 0, 0).applyQuaternion(st.heroQuat);
+        const stageDepth = (this._stepDepthVec ||= new THREE.Vector3()).subVectors(st.heroPos, this.camera.position);
+        if (stageDepth.lengthSq() > 1e-6) stageDepth.normalize();
+        else stageDepth.set(0, 0, -1).applyQuaternion(this.camera.quaternion);
+        this.focusPlate.position.addScaledVector(stageRight, st.carriageShift);
+        this.focusPlate.position.addScaledVector(stageDepth, st.carriageDepth);
+      }
+      if (Math.abs(st.carriageYaw) > 0) {
+        const yawQ = (this._stepYawQuat ||= new THREE.Quaternion()).setFromAxisAngle(
+          st.cardUp || THREE.Object3D.DEFAULT_UP,
+          st.carriageYaw,
+        );
+        this.focusPlate.quaternion.premultiply(yawQ);
+      }
+
       this.focusPlate.scale.lerpVectors(st.scaleFrom || st.cardScale, st.heroScale, clamp(st.scaleProgress, 0, 1));
 
       const liquidMat = this.focusPlate.userData?.liquidMat;
       if (liquidMat) {
         const lu = liquidMat.uniforms;
         lu.uTime.value = time * 0.001;
-        if (st.hdDecoded && !st.wasStepping && st.hdStartUv) {
-          const sp = clamp(st.scaleProgress, 0, 1);
-          lu.uUvRectCurr.value.set(
-            THREE.MathUtils.lerp(st.hdStartUv.x, 0, sp),
-            THREE.MathUtils.lerp(st.hdStartUv.y, 0, sp),
-            THREE.MathUtils.lerp(st.hdStartUv.z, 1, sp),
-            THREE.MathUtils.lerp(st.hdStartUv.w, 1, sp),
-          );
-        }
-        const mixRaw = clamp((st.transitionElapsed ?? 1) / Math.max(1e-6, st.transitionDuration || 0.68), 0, 1);
-        const mixEased = 1 - Math.pow(1 - mixRaw, 3);
-        lu.uMix.value = mixEased;
+        lu.uPlateAspect.value = (1.08 * Math.abs(this.focusPlate.scale.x))
+          / Math.max(1e-4, 0.72 * Math.abs(this.focusPlate.scale.y));
+        lu.uLiftProgress.value = st.wasStepping ? 1 : p;
+        lu.uMix.value = st.wasStepping ? mixEased : 1;
         if (mixRaw >= 1 && lu.uTexPrev.value !== lu.uTexCurr.value) {
           const donePrev = lu.uTexPrev.value;
           lu.uTexPrev.value = lu.uTexCurr.value;
           lu.uUvRectPrev.value.copy(lu.uUvRectCurr.value);
+          lu.uAspectPrev.value = lu.uAspectCurr.value;
           this._releaseOwnedFocusTexture(donePrev, lu.uTexPrev.value, lu.uTexCurr.value);
         }
         const fTarget = this.focusPointerTarget ||= new THREE.Vector2();
@@ -2601,15 +2874,21 @@ export class PhotoUniverse {
         if (this.reducedMotion) fCurr.set(0, 0);
         else fCurr.lerp(fTarget, 1 - Math.exp(-dt * 7.5));
         lu.uTilt.value.copy(fCurr);
-        lu.uCurl.value = clamp(st.springVel * 0.11 + (st.curlBoost || 0), -0.72, 0.72);
+        const flightCurl = !st.wasStepping ? Math.sin(p * Math.PI) * 0.18 : 0;
+        const stepCurl = st.wasStepping ? (st.curlBoost || 0) * Math.sin(mixRaw * Math.PI) : 0;
+        lu.uCurl.value = clamp(flightCurl + stepCurl, -0.72, 0.72);
       }
     }
     if (this._closingPlate) {
       const cp = this._closingPlate;
       cp.elapsed = Math.min(cp.duration, cp.elapsed + dt);
       const t = clamp(cp.elapsed / Math.max(1e-6, cp.duration), 0, 1);
-      const ease = 1 - Math.pow(1 - t, 3.2);
+      const ease = silkFlightEase(t);
       cp.mesh.position.lerpVectors(cp.fromPos, cp.toPos, ease);
+      if (cp.normal && ease > 0 && ease < 1) {
+        const returnArc = Math.sin((1 - ease) * Math.PI) * 0.42;
+        cp.mesh.position.addScaledVector(cp.normal, returnArc);
+      }
       if (cp.fromQuat && cp.toQuat) {
         cp.mesh.quaternion.slerpQuaternions(cp.fromQuat, cp.toQuat, ease);
       }
@@ -2617,18 +2896,13 @@ export class PhotoUniverse {
       const lu = cp.mesh.userData?.liquidMat?.uniforms;
       if (lu) {
         lu.uTime.value = time * 0.001;
-        lu.uOpacity.value = t < 0.82 ? 1 : clamp((1 - t) / 0.18, 0, 1);
-        lu.uCurl.value = -Math.sin(t * Math.PI) * 0.32;
-        if (cp.fromUv && cp.toUv && lu.uUvRectCurr?.value) {
-          lu.uUvRectCurr.value.set(
-            THREE.MathUtils.lerp(cp.fromUv.x, cp.toUv.x, ease),
-            THREE.MathUtils.lerp(cp.fromUv.y, cp.toUv.y, ease),
-            THREE.MathUtils.lerp(cp.fromUv.z, cp.toUv.z, ease),
-            THREE.MathUtils.lerp(cp.fromUv.w, cp.toUv.w, ease),
-          );
-        }
+        lu.uPlateAspect.value = (1.08 * Math.abs(cp.mesh.scale.x))
+          / Math.max(1e-4, 0.72 * Math.abs(cp.mesh.scale.y));
+        lu.uLiftProgress.value = 1 - ease;
+        lu.uOpacity.value = t < 0.84 ? 1 : clamp((1 - t) / 0.16, 0, 1);
+        lu.uCurl.value = -Math.sin(ease * Math.PI) * 0.24;
       }
-      if (t >= 0.85 && this.photoUniforms?.uFocusSlotHide) {
+      if (t >= 0.86 && this.photoUniforms?.uFocusSlotHide) {
         this.photoUniforms.uFocusSlotHide.value = 0;
       }
       if (cp.elapsed >= cp.duration) {

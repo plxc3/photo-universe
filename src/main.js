@@ -348,15 +348,9 @@ function renderFocusStrip(centerPosition) {
   }
 }
 
-function updateFocusCaption(photo, position, { stepping = false } = {}) {
+function applyCaptionFields(photo, position) {
   const accent = photo.accentHex || '#c8a27c';
   $('focus-hud').style.setProperty('--photo-accent', accent);
-  const captionEl = $('focus-hud')?.querySelector('.focus-caption');
-  if (stepping && captionEl && !reducedMotion.matches) {
-    captionEl.classList.add('is-stepping');
-    clearTimeout(focusCaptionSwapTimer);
-    focusCaptionSwapTimer = setTimeout(() => captionEl.classList.remove('is-stepping'), 170);
-  }
   const displayTitle = photo.title || photo.name || '';
   $('focus-title').textContent = displayTitle;
   const authorText = photo.author && photo.author !== displayTitle ? '— ' + photo.author : '';
@@ -367,7 +361,39 @@ function updateFocusCaption(photo, position, { stepping = false } = {}) {
   const dateTag = photo.capturedDate || (photo.capturedYear ? String(photo.capturedYear) : '');
   const parts = [photo.toneLabel || '暗房 · ARCHIVE', aspectTag, dateTag].filter(Boolean);
   $('focus-tone').textContent = parts.join(' · ');
+}
+
+function updateFocusCaption(photo, position, { stepping = false, flowDir = 1 } = {}) {
   renderFocusStrip(position);
+  const captionEl = $('focus-hud')?.querySelector('.focus-caption');
+  clearTimeout(focusCaptionSwapTimer);
+  if (stepping && captionEl && !reducedMotion.matches) {
+    captionEl.style.setProperty('--step-dir', String(flowDir >= 0 ? 1 : -1));
+    captionEl.classList.remove('is-stepping-prep');
+    captionEl.classList.add('is-stepping-out');
+    focusCaptionSwapTimer = setTimeout(() => {
+      applyCaptionFields(photo, position);
+      captionEl.classList.remove('is-stepping-out');
+      captionEl.classList.add('is-stepping-prep');
+      void captionEl.offsetWidth;
+      captionEl.classList.remove('is-stepping-prep');
+    }, 135);
+    return;
+  }
+  captionEl?.classList.remove('is-stepping-out', 'is-stepping-prep');
+  applyCaptionFields(photo, position);
+}
+
+function preloadFocusNeighbors(centerPosition) {
+  if (!universe || !validPhotoIndices.length) return;
+  const total = validPhotoIndices.length;
+  const targets = [
+    validPhotoIndices[(centerPosition + 1) % total],
+    validPhotoIndices[(centerPosition - 1 + total) % total],
+    validPhotoIndices[(centerPosition + 2) % total],
+    validPhotoIndices[(centerPosition - 2 + total) % total],
+  ];
+  universe.preloadFocusPhotos(targets);
 }
 
 function showPhoto(index, instanceIndex = -1, flowDir = 1) {
@@ -387,7 +413,8 @@ function showPhoto(index, instanceIndex = -1, flowDir = 1) {
       focusTrigger = document.activeElement;
     }
     if (universe.focusPhoto(index, instanceIndex, { flowDir })) {
-      updateFocusCaption(photo, position, { stepping: wasFocused });
+      updateFocusCaption(photo, position, { stepping: wasFocused, flowDir });
+      preloadFocusNeighbors(position);
       soundscape.playFocusPulse(true);
       return;
     }
@@ -748,6 +775,11 @@ async function importPhotos(files, options = {}) {
       toast(skipped + ' 张照片暂时无法读取');
     }
     syncPlaying();
+    if (universe && validPhotoIndices.length) {
+      setTimeout(() => {
+        if (!pageDisposed) universe?.preloadFocusPhotos(validPhotoIndices.slice(0, 12));
+      }, 180);
+    }
   } catch (error) {
     if (pageDisposed) return;
     thresholdDismissed = true;
@@ -1089,6 +1121,7 @@ try {
     onHoverPhoto: photoIndex => {
       const key = photos[photoIndex]?.spectralKey ?? 0.5;
       soundscape.playHoverTick(key);
+      universe?.preloadFocusPhotos([photoIndex]);
     },
     onHoverStateChange: ({ active, photoIndex }) => {
       if (!reticleEl) return;

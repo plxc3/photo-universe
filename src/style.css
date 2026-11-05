@@ -657,11 +657,17 @@ button:focus-visible, a:focus-visible, input:focus-visible {
   gap: 4px;
   min-width: 0;
   text-shadow: var(--ink-shadow);
-  transition: opacity 0.24s ease, transform 0.28s var(--ease-out);
+  transition: opacity 0.30s var(--ease-out), transform 0.34s var(--ease-out);
 }
-.focus-caption.is-stepping {
-  opacity: 0.46;
-  transform: translateY(3px);
+.focus-caption.is-stepping-out {
+  opacity: 0;
+  transform: translate3d(calc(var(--step-dir, 1) * -8px), 2px, 0);
+  transition: opacity 0.13s ease-out, transform 0.15s ease-out;
+}
+.focus-caption.is-stepping-prep {
+  opacity: 0;
+  transform: translate3d(calc(var(--step-dir, 1) * 8px), 2px, 0);
+  transition: none !important;
 }
 .focus-meta-row {
   display: flex;
