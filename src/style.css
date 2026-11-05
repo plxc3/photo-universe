@@ -440,6 +440,16 @@ button:focus-visible, a:focus-visible, input:focus-visible {
   letter-spacing: 0.01em;
 }
 
+.act-roman,
+.act-name,
+.act-time {
+  cursor: pointer;
+}
+.film-active .act-roman,
+.film-active .act-name,
+.film-active .act-time {
+  cursor: default;
+}
 .act-roman {
   font-family: var(--brand);
   font-style: italic;
@@ -629,14 +639,17 @@ button:focus-visible, a:focus-visible, input:focus-visible {
   align-items: end;
   gap: 24px;
   pointer-events: none;
-  animation: focus-whisper-in 0.48s var(--ease-out);
+  opacity: 0;
+  transform: translateY(10px);
+  transition: opacity 0.24s var(--ease-out), transform 0.28s var(--ease-out);
 }
-.focus-hud > * {
+.focus-active .focus-hud {
+  opacity: 1;
+  transform: translateY(0);
+  transition: opacity 0.44s var(--ease-out) 0.14s, transform 0.48s var(--ease-out) 0.14s;
+}
+.focus-active .focus-hud > * {
   pointer-events: auto;
-}
-@keyframes focus-whisper-in {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: translateY(0); }
 }
 .focus-caption {
   display: flex;
@@ -644,6 +657,11 @@ button:focus-visible, a:focus-visible, input:focus-visible {
   gap: 4px;
   min-width: 0;
   text-shadow: var(--ink-shadow);
+  transition: opacity 0.24s ease, transform 0.28s var(--ease-out);
+}
+.focus-caption.is-stepping {
+  opacity: 0.46;
+  transform: translateY(3px);
 }
 .focus-meta-row {
   display: flex;
@@ -767,12 +785,27 @@ dialog::backdrop {
   scrollbar-width: thin;
   scrollbar-color: var(--control) transparent;
 }
-#gallery-dialog[open] {
-  animation: curtain-unfold 0.38s var(--ease-out);
+#gallery-dialog[open],
+#photo-dialog[open] {
+  animation: curtain-unfold 0.36s var(--ease-out);
+}
+#gallery-dialog[data-closing='true'],
+#photo-dialog[data-closing='true'] {
+  animation: curtain-dissolve 0.22s var(--ease-out) forwards;
+  pointer-events: none;
+}
+#gallery-dialog[data-closing='true']::backdrop,
+#photo-dialog[data-closing='true']::backdrop {
+  opacity: 0;
+  transition: opacity 0.22s var(--ease-out);
 }
 @keyframes curtain-unfold {
   from { opacity: 0; transform: translateY(10px); }
   to { opacity: 1; transform: translateY(0); }
+}
+@keyframes curtain-dissolve {
+  from { opacity: 1; transform: translateY(0); }
+  to { opacity: 0; transform: translateY(6px); }
 }
 
 .curtain-masthead {

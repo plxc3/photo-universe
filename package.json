@@ -1,8 +1,24 @@
 {
   "name": "memoria-photo-universe",
   "version": "1.0.0",
-  "private": true,
+  "description": "Memoria · 记忆的形状 — 把 3,000 张照片显影为可漫游的 3D 色温星环、螺旋走廊与全画幅光学液态暗房（Three.js + Custom GLSL）",
+  "license": "MIT",
   "type": "module",
+  "homepage": "https://plxc3.github.io/photo-universe/",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/plxc3/photo-universe.git"
+  },
+  "keywords": [
+    "threejs",
+    "webgl",
+    "glsl",
+    "photo-gallery",
+    "3d-gallery",
+    "creative-coding",
+    "interactive-art",
+    "vite"
+  ],
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 5178",
     "build": "vite build",

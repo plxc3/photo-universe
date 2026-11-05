@@ -1,5 +1,7 @@
 node_modules/
+dist/
+.openai/
+.taste-skill/
+.DS_Store
 *.webm
 *.mp4
-
-.taste-skill/

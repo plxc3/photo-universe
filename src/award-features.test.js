@@ -825,9 +825,23 @@ test('PhotoUniverse supports Threshold Gate 1.8s optical rack-focus and in-stage
   assert.equal(O.camera.fov, 54);
   assert.equal(O.controls.enabled, true);
 
-  // Enter Monopo full-frame exhibition on landscape photo 0, then liquid-step to portrait photo 1
+  // Enter Monopo full-frame exhibition via Camera-Space 3D FLIP on landscape photo 0, then liquid-step to portrait photo 1
+  const camBeforeFocus = O.camera.position.clone();
   assert.equal(O.focusPhoto(0, 0, { flowDir: 1 }), true);
-  for (; clock <= 3600; clock += 50) O.animate(clock);
+  assert.equal(O.photoUniforms.uFocusSlotHide.value, 1, 'clicked instanced slot hides immediately at t=0 for zero double-draw');
+  assert.ok(O.focusState.cardQuat && O.focusState.heroQuat, 'captures cardQuat -> heroQuat 3D FLIP endpoints');
+  const startPlateQuat = O.focusPlate.quaternion.clone();
+  assert.ok(startPlateQuat.angleTo(O.focusState.cardQuat) < 1e-4, 'plate detaches from exact 3D facet orientation');
+
+  let maxSpringSeen = 0;
+  for (; clock <= 3600; clock += 50) {
+    O.animate(clock);
+    if (O.focusState) maxSpringSeen = Math.max(maxSpringSeen, O.focusState.springValue);
+    assert.ok(Math.abs(O.camera.up.x) < 1e-3 && O.camera.up.y > 0.999, 'horizon remains 100% level (zero camera roll)');
+  }
+  assert.ok(maxSpringSeen <= 1.0005, 'critically-damped 3D FLIP spring has zero overshoot bounce');
+  assert.ok(O.camera.position.distanceTo(camBeforeFocus) <= 3.5, 'camera performs calm <=3.0u optical dolly breath instead of wild lateral swing');
+  assert.ok(O.focusPlate.quaternion.angleTo(O.focusState.heroQuat) < 1e-3, 'plate slerps squarely to viewer heroQuat');
   assert.ok(1.08 * O.focusPlate.scale.x > 0.72 * O.focusPlate.scale.y, 'landscape print proportions');
   const stageHeroPos = O.focusState.heroPos.clone();
 
@@ -843,13 +857,15 @@ test('PhotoUniverse supports Threshold Gate 1.8s optical rack-focus and in-stage
   assert.equal(lu.uMix.value, 1);
   assert.ok(0.72 * O.focusPlate.scale.y > 1.08 * O.focusPlate.scale.x, 'spring-morphs smoothly into portrait proportions');
 
-  // Closing contracts transient _closingPlate back into card slot and disposes cleanly
+  // Closing contracts transient _closingPlate back into card slot via 3D slerp and disposes cleanly
+  const targetSlotQuat = O.focusState.cardQuat.clone();
   assert.equal(O.closeFocus(false), true);
   assert.equal(O.focusState, null);
   assert.equal(O.focusPlate, null);
-  assert.ok(O._closingPlate, 'transient silk contraction plate bridges exit');
+  assert.ok(O._closingPlate && O._closingPlate.toQuat.angleTo(targetSlotQuat) < 1e-4, 'transient silk contraction plate bridges 3D rotation exit');
   for (; clock <= 5400; clock += 50) O.animate(clock);
   assert.equal(O._closingPlate, null, 'closing plate disposes GPU resources upon settling');
+  assert.equal(O.photoUniforms.uFocusSlotHide.value, 0, 'instanced slot visibility restored cleanly');
 
   O.clearPhotos();
 });

@@ -20,6 +20,7 @@ const params = new URLSearchParams(location.search);
 const inspecting = params.has('inspect');
 const debugEnabled = inspecting || params.has('debug');
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+const coarsePointerQuery = window.matchMedia('(pointer: coarse)');
 const profiler = new FrameProfiler();
 const stemUrl = new URL(
   'audio/felt-chamber-stem.mp3',
@@ -78,10 +79,45 @@ let photoRequest;
 let photoPointer;
 let photoFeedbackTimer;
 let photoTransitionTimer;
+let focusHudHideTimer;
+let focusCaptionSwapTimer;
 let scrubbingFilm = false;
 let exportAspect = 'auto';
+const dialogCloseTimers = new WeakMap();
 const photoPointers = new Set();
 const galleryUrls = new Set();
+
+function closeDialogSmooth(dialog, { instant = false } = {}) {
+  if (!dialog?.open) return;
+  const existing = dialogCloseTimers.get(dialog);
+  if (instant || reducedMotion.matches) {
+    if (existing) {
+      clearTimeout(existing);
+      dialogCloseTimers.delete(dialog);
+    }
+    delete dialog.dataset.closing;
+    dialog.close();
+    return;
+  }
+  if (dialog.dataset.closing === 'true') return;
+  dialog.dataset.closing = 'true';
+  const timer = setTimeout(() => {
+    dialogCloseTimers.delete(dialog);
+    delete dialog.dataset.closing;
+    if (dialog.open) dialog.close();
+  }, 220);
+  dialogCloseTimers.set(dialog, timer);
+}
+
+function cancelDialogClosing(dialog) {
+  if (!dialog) return;
+  const existing = dialogCloseTimers.get(dialog);
+  if (existing) {
+    clearTimeout(existing);
+    dialogCloseTimers.delete(dialog);
+  }
+  delete dialog.dataset.closing;
+}
 
 function padCount(n) {
   return n < 1000 ? String(n).padStart(4, '0') : n.toLocaleString();
@@ -94,6 +130,8 @@ function toast(message) {
   toastTimer = setTimeout(() => { $('toast').hidden = true; }, 4200);
 }
 
+const hasOpenDialog = () => Boolean(document.querySelector('dialog[open]:not([data-closing="true"])'));
+
 function noteStageActivity() {
   $('app').classList.remove('is-idle');
   clearTimeout(idleStageTimer);
@@ -102,7 +140,7 @@ function noteStageActivity() {
     !thresholdDismissed ||
     hoveringStageUi ||
     universe?.focusState ||
-    document.querySelector('dialog[open]')
+    hasOpenDialog()
   ) {
     return;
   }
@@ -112,7 +150,7 @@ function noteStageActivity() {
       thresholdDismissed &&
       !hoveringStageUi &&
       !universe?.focusState &&
-      !document.querySelector('dialog[open]')
+      !hasOpenDialog()
     ) {
       $('app').classList.add('is-idle');
     }
@@ -156,7 +194,7 @@ function resetStageReadout(mode = universe?.mode || 'orbit') {
   const label = found >= 0 ? FORMATIONS[found].label : '星环';
   if ($('act-roman')) $('act-roman').textContent = ROMAN_ACTS[Math.max(0, found)] || 'I';
   $('film-act').textContent = mode === 'orbit' ? '序幕 · 星环' : '形态 · ' + label;
-  $('film-time').textContent = '滚轮叙事 · 拖动环视';
+  $('film-time').textContent = coarsePointerQuery.matches ? '轻点漫游 · 拖动环视' : '滚轮叙事 · 拖动环视';
   $('app').style.setProperty('--timeline-progress', '0');
 }
 
@@ -230,10 +268,28 @@ $('loader')?.addEventListener('click', () => {
     enterArchiveFromThreshold();
   }
 });
+let loaderTouchStartY = null;
+$('loader')?.addEventListener('touchstart', event => {
+  if ($('loader')?.dataset.phase === 'threshold' && event.touches.length === 1) {
+    loaderTouchStartY = event.touches[0].clientY;
+  }
+}, { passive: true });
+$('loader')?.addEventListener('touchmove', event => {
+  if (loaderTouchStartY !== null && $('loader')?.dataset.phase === 'threshold' && event.touches.length === 1) {
+    if (Math.abs(event.touches[0].clientY - loaderTouchStartY) > 18) {
+      loaderTouchStartY = null;
+      enterArchiveFromThreshold();
+    }
+  }
+}, { passive: true });
 $('threshold-enter')?.addEventListener('click', event => {
   event.stopPropagation();
   enterArchiveFromThreshold();
 });
+if (coarsePointerQuery.matches) {
+  const promptEl = document.querySelector('#threshold-enter .threshold-prompt');
+  if (promptEl) promptEl.textContent = '轻触或上滑进入暗房';
+}
 
 function updateMode(mode) {
   $('app').classList.toggle('mode-tunnel', mode === 'tunnel');
@@ -292,9 +348,15 @@ function renderFocusStrip(centerPosition) {
   }
 }
 
-function updateFocusCaption(photo, position) {
+function updateFocusCaption(photo, position, { stepping = false } = {}) {
   const accent = photo.accentHex || '#c8a27c';
   $('focus-hud').style.setProperty('--photo-accent', accent);
+  const captionEl = $('focus-hud')?.querySelector('.focus-caption');
+  if (stepping && captionEl && !reducedMotion.matches) {
+    captionEl.classList.add('is-stepping');
+    clearTimeout(focusCaptionSwapTimer);
+    focusCaptionSwapTimer = setTimeout(() => captionEl.classList.remove('is-stepping'), 170);
+  }
   const displayTitle = photo.title || photo.name || '';
   $('focus-title').textContent = displayTitle;
   const authorText = photo.author && photo.author !== displayTitle ? '— ' + photo.author : '';
@@ -317,14 +379,15 @@ function showPhoto(index, instanceIndex = -1, flowDir = 1) {
   const photo = photos[index];
 
   if (universe) {
+    const wasFocused = Boolean(universe.focusState);
     if ($('gallery-dialog').open) {
-      $('gallery-dialog').close();
+      closeDialogSmooth($('gallery-dialog'));
     }
-    if (!universe.focusState) {
+    if (!wasFocused) {
       focusTrigger = document.activeElement;
     }
     if (universe.focusPhoto(index, instanceIndex, { flowDir })) {
-      updateFocusCaption(photo, position);
+      updateFocusCaption(photo, position, { stepping: wasFocused });
       soundscape.playFocusPulse(true);
       return;
     }
@@ -546,6 +609,7 @@ function openGallery() {
   if (busy || !validPhotoIndices.length) return;
   if (!thresholdDismissed) enterArchiveFromThreshold();
   if (universe?.focusState) universe.closeFocus(true);
+  cancelDialogClosing($('gallery-dialog'));
   clearTimeout(idleStageTimer);
   $('app').classList.remove('is-idle');
   activeChapterKey = 'all';
@@ -553,9 +617,11 @@ function openGallery() {
   renderGalleryChapters();
   renderGallery();
   syncVaultUI();
-  galleryPlaying = universe?.running ?? false;
-  if (universe) universe.running = false;
-  $('gallery-dialog').showModal();
+  if (!$('gallery-dialog').open) {
+    galleryPlaying = universe?.running ?? false;
+    if (universe) universe.running = false;
+    $('gallery-dialog').showModal();
+  }
 }
 
 function setControlsDisabled(value) {
@@ -781,7 +847,7 @@ function restoreExportFraming() {
 function playFilm() {
   if (busy || !photos.length || !universe) return;
   if (!thresholdDismissed) enterArchiveFromThreshold();
-  if ($('gallery-dialog').open) $('gallery-dialog').close();
+  if ($('gallery-dialog').open) closeDialogSmooth($('gallery-dialog'));
   if (universe.focusState) universe.closeFocus(true);
   scrubbingFilm = false;
   syncFilmReadout(0);
@@ -846,7 +912,7 @@ function recordFilm() {
   if (recorder) { leaveFilm(); return; }
   if (busy || !photos.length || !universe) return;
   if (!thresholdDismissed) enterArchiveFromThreshold();
-  if ($('gallery-dialog').open) $('gallery-dialog').close();
+  if ($('gallery-dialog').open) closeDialogSmooth($('gallery-dialog'), { instant: true });
   const canvas = universe.renderer.domElement;
   if (!CanvasRecorder.isSupported() || typeof canvas.captureStream !== 'function' || !CanvasRecorder.pickMimeType()) {
     toast('当前浏览器无法录制，请使用新版 Chrome、Edge 或 Safari');
@@ -876,7 +942,7 @@ function togglePlaying() {
 
 function toggleClean() {
   if (universe?.film || universe?.focusState) return;
-  if ($('gallery-dialog').open) $('gallery-dialog').close();
+  if ($('gallery-dialog').open) closeDialogSmooth($('gallery-dialog'));
   const clean = $('app').classList.toggle('clean');
   $('restore-ui').hidden = !clean;
   setChromeInert();
@@ -914,21 +980,37 @@ function handleFocusChange({ active, photoIndex, step }) {
     nextPhoto(step);
     return;
   }
+  const hud = $('focus-hud');
+  const alreadyFocused = $('app').classList.contains('focus-active');
   if (active && Number.isInteger(photoIndex) && photos[photoIndex]) {
     const pos = validPhotoIndices.indexOf(photoIndex);
     if (pos >= 0) {
       selectedPhoto = pos;
-      updateFocusCaption(photos[photoIndex], pos);
+      updateFocusCaption(photos[photoIndex], pos, { stepping: alreadyFocused });
     }
   }
-  $('app').classList.toggle('focus-active', Boolean(active));
-  $('focus-hud').hidden = !active;
-  setChromeInert();
+  clearTimeout(focusHudHideTimer);
   if (active) {
+    hud.hidden = false;
+    hud.inert = false;
+    requestAnimationFrame(() => {
+      if (universe?.focusState) $('app').classList.add('focus-active');
+      setChromeInert();
+    });
     clearTimeout(idleStageTimer);
     $('app').classList.remove('is-idle');
     $('focus-close').focus({ preventScroll: true });
   } else {
+    $('app').classList.remove('focus-active');
+    hud.inert = true;
+    setChromeInert();
+    if (reducedMotion.matches) {
+      hud.hidden = true;
+    } else {
+      focusHudHideTimer = setTimeout(() => {
+        if (!universe?.focusState) hud.hidden = true;
+      }, 260);
+    }
     soundscape.playFocusPulse(false);
     syncPlaying();
     noteStageActivity();
@@ -1105,7 +1187,7 @@ $('retry').addEventListener('click', () => location.reload());
 $('collection').addEventListener('click', openGallery);
 $('browse-fallback').addEventListener('click', openGallery);
 $('demo').addEventListener('click', () => {
-  $('gallery-dialog').close();
+  closeDialogSmooth($('gallery-dialog'), { instant: true });
   importPhotos();
 });
 $('brand').addEventListener('click', () => {
@@ -1117,9 +1199,13 @@ $('brand').addEventListener('click', () => {
 });
 
 document.querySelectorAll('.dialog-close').forEach(button => {
-  button.addEventListener('click', () => button.closest('dialog').close());
+  button.addEventListener('click', () => closeDialogSmooth(button.closest('dialog')));
 });
 document.querySelectorAll('dialog').forEach(dialog => {
+  dialog.addEventListener('cancel', event => {
+    event.preventDefault();
+    closeDialogSmooth(dialog);
+  });
   dialog.addEventListener('click', event => {
     if (event.target !== dialog) return;
     const rect = dialog.getBoundingClientRect();
@@ -1129,7 +1215,7 @@ document.querySelectorAll('dialog').forEach(dialog => {
       event.clientY < rect.top ||
       event.clientY > rect.bottom
     ) {
-      dialog.close();
+      closeDialogSmooth(dialog);
     }
   });
 });
@@ -1184,7 +1270,7 @@ $('photo-stage').addEventListener('pointerup', event => {
 document.querySelectorAll('[data-mode]').forEach(button => {
   button.addEventListener('click', () => {
     if (!universe || busy) return;
-    if ($('gallery-dialog').open) $('gallery-dialog').close();
+    if ($('gallery-dialog').open) closeDialogSmooth($('gallery-dialog'));
     leaveFilm(false);
     exitScrollMode(false);
     soundscape.playFocusPulse(true);
@@ -1241,7 +1327,7 @@ scrubZone?.addEventListener('pointercancel', endEdgeScrub);
 document.querySelectorAll('[data-act-seek]').forEach(button => {
   button.addEventListener('click', () => {
     if (!universe || busy || recorder) return;
-    if ($('gallery-dialog').open) $('gallery-dialog').close();
+    if ($('gallery-dialog').open) closeDialogSmooth($('gallery-dialog'));
     const targetSec = Number(button.dataset.actSeek) || 0;
     soundscape.playFocusPulse(true);
     if (universe.film) {
@@ -1258,7 +1344,7 @@ document.querySelectorAll('[data-act-seek]').forEach(button => {
 // 2. Focus Exhibition -> Wheel liquid-morphs between adjacent full-HD photographs
 // 3. Main Stage -> Pure 5-Act Scrollytelling
 window.addEventListener('wheel', event => {
-  if (!universe || busy || recorder || document.querySelector('dialog[open]') || event.ctrlKey) {
+  if (!universe || busy || recorder || hasOpenDialog() || event.ctrlKey) {
     return;
   }
   const unitScale = event.deltaMode === 1 ? 24 : event.deltaMode === 2 ? 360 : 1;
@@ -1298,13 +1384,19 @@ window.addEventListener('wheel', event => {
 
 $('play').addEventListener('click', togglePlaying);
 $('reset').addEventListener('click', () => {
-  if ($('gallery-dialog').open) $('gallery-dialog').close();
+  if ($('gallery-dialog').open) closeDialogSmooth($('gallery-dialog'));
   leaveFilm(false);
   exitScrollMode(false);
   universe?.resetView(false);
 });
 $('film').addEventListener('click', playFilm);
 $('film-quick').addEventListener('click', playFilm);
+for (const el of [$('act-roman'), $('film-act'), $('film-time')]) {
+  el?.addEventListener('click', () => {
+    if (!universe || busy || universe.film || universe.focusState) return;
+    playFilm();
+  });
+}
 $('stop-film').addEventListener('click', () => {
   if (universe?.film) leaveFilm();
   else exitScrollMode(true);
@@ -1333,12 +1425,12 @@ document.addEventListener('keydown', event => {
     enterArchiveFromThreshold();
     return;
   }
-  if ($('photo-dialog').open) {
+  if ($('photo-dialog').open && $('photo-dialog').dataset.closing !== 'true') {
     if (event.key === 'ArrowLeft') { event.preventDefault(); nextPhoto(-1); }
     if (event.key === 'ArrowRight') { event.preventDefault(); nextPhoto(1); }
     return;
   }
-  if (document.querySelector('dialog[open]') || !universe) return;
+  if (hasOpenDialog() || !universe) return;
   if (universe.focusState) {
     if (event.key === 'ArrowLeft') { event.preventDefault(); nextPhoto(-1); return; }
     if (event.key === 'ArrowRight') { event.preventDefault(); nextPhoto(1); return; }
@@ -1381,6 +1473,8 @@ window.addEventListener('pagehide', event => {
   clearTimeout(toastTimer);
   clearTimeout(loaderHideTimer);
   clearTimeout(idleStageTimer);
+  clearTimeout(focusHudHideTimer);
+  clearTimeout(focusCaptionSwapTimer);
   recorder?.dispose();
   recorder = null;
   setRecordingUI(false);
