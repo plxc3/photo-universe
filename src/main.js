@@ -999,7 +999,9 @@ function handleFocusChange({ active, photoIndex, step }) {
     });
     clearTimeout(idleStageTimer);
     $('app').classList.remove('is-idle');
-    $('focus-close').focus({ preventScroll: true });
+    if (focusTrigger && focusTrigger !== document.body && focusTrigger !== document.documentElement) {
+      $('focus-close').focus({ preventScroll: true });
+    }
   } else {
     $('app').classList.remove('focus-active');
     hud.inert = true;
