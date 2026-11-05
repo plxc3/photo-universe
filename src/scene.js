@@ -166,6 +166,8 @@ export class PhotoUniverse {
 
     this.pointerTarget = new THREE.Vector2();
     this.pointerCurrent = new THREE.Vector2();
+    this.focusPointerTarget = new THREE.Vector2();
+    this.focusPointerCurrent = new THREE.Vector2();
     this.hoverNdc = new THREE.Vector2();
     this.hoverPointer = null;
     this.lastHoverTime = -Infinity;
@@ -258,18 +260,26 @@ export class PhotoUniverse {
     this.renderer.domElement.addEventListener('pointerdown', event => this.beginPointer(event));
     this.renderer.domElement.addEventListener('pointermove', event => {
       this.movePointer(event);
-      if (!this.pointerEnabled || this.dragging || this.film || this.focusState || event.buttons || event.pointerType === 'touch') return;
-      this.hoverPointer = [event.clientX, event.clientY];
+      if (!this.pointerEnabled || this.dragging || this.film || event.buttons || event.pointerType === 'touch') return;
       const rect = this.renderer.domElement.getBoundingClientRect();
-      this.pointerTarget.set(clamp((event.clientX - rect.left) / rect.width * 2 - 1, -1, 1), clamp((event.clientY - rect.top) / rect.height * 2 - 1, -1, 1));
+      const nx = clamp((event.clientX - rect.left) / rect.width * 2 - 1, -1, 1);
+      const ny = clamp((event.clientY - rect.top) / rect.height * 2 - 1, -1, 1);
+      if (this.focusState) {
+        (this.focusPointerTarget ||= new THREE.Vector2()).set(nx, ny);
+        return;
+      }
+      this.hoverPointer = [event.clientX, event.clientY];
+      this.pointerTarget.set(nx, ny);
     });
     this.renderer.domElement.addEventListener('pointerleave', () => {
       this.pointerTarget.set(0, 0);
+      this.focusPointerTarget?.set(0, 0);
       this.clearHover();
     });
     this.renderer.domElement.addEventListener('pointercancel', event => {
       this.endPointer(event, true);
       this.pointerTarget.set(0, 0);
+      this.focusPointerTarget?.set(0, 0);
       this.clearHover();
     });
     this.renderer.domElement.addEventListener('pointerup', event => this.endPointer(event));
@@ -350,7 +360,7 @@ export class PhotoUniverse {
   // current viewing direction. Only for the default view; user-dragged views
   // and the cinematic/tunnel framings are left untouched.
   reframeDefaultView() {
-    if (this.film || this.focusState || !this.defaultView || this.mode !== 'orbit') return;
+    if (this.film || this.focusState || (this.thresholdState && !this.thresholdState.unlocking) || !this.defaultView || this.mode !== 'orbit') return;
     const amount = portraitAmount(this.camera.aspect);
     if (this.instances.length && Math.abs(amount - (this.formationPortrait || 0)) > 1e-6) {
       this.setFormation('orbit', false, true);
@@ -398,7 +408,7 @@ export class PhotoUniverse {
       const off = flightViewOffset(this.film.elapsed || 0, x, y, this.film.startOffset);
       fx = off.x;
       fy = off.y;
-    } else if (this.mode === 'tunnel' || this.focusState) {
+    } else if (this.mode === 'tunnel' || this.focusState || (this.thresholdState && !this.thresholdState.unlocking)) {
       fx = 0;
       fy = 0;
     }
@@ -509,6 +519,14 @@ export class PhotoUniverse {
     const rect = this.renderer.domElement.getBoundingClientRect();
     this.hoverNdc.set((clientX - rect.left) / rect.width * 2 - 1, -(clientY - rect.top) / rect.height * 2 + 1);
     this.raycaster.setFromCamera(this.hoverNdc, this.camera);
+    if (this.focusState && this.focusPlate) {
+      this.focusOverlayScene?.updateMatrixWorld(true);
+      const plateHit = this.raycaster.intersectObject(this.focusPlate, false)[0];
+      if (!plateHit) {
+        this.closeFocus(false);
+      }
+      return;
+    }
     if (this.boundsDirty) {
       for (const mesh of this.meshes) mesh.computeBoundingSphere();
       this.boundsDirty = false;
@@ -517,10 +535,7 @@ export class PhotoUniverse {
     if (hit?.instanceId !== undefined) {
       const photoIndex = hit.object.userData?.photoIndices?.[hit.instanceId];
       const instanceIndex = hit.object.userData?.instanceIndices?.[hit.instanceId];
-      if (this.focusState && instanceIndex !== undefined && this.focusState.instanceIndex === instanceIndex) return;
       if (photoIndex !== undefined) this.callbacks.onPick?.(photoIndex, instanceIndex);
-    } else if (this.focusState) {
-      this.closeFocus(false);
     }
   }
 
@@ -589,10 +604,49 @@ export class PhotoUniverse {
     }
   }
 
+  _getBlankFocusTexture() {
+    if (!this._blankFocusTexture) {
+      const data = new Uint8Array([6, 6, 10, 255]);
+      const tex = new THREE.DataTexture(data, 1, 1, THREE.RGBAFormat);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.needsUpdate = true;
+      this._blankFocusTexture = tex;
+    }
+    return this._blankFocusTexture;
+  }
+
+  _releaseOwnedFocusTexture(tex, keepA = null, keepB = null) {
+    if (!tex || !this._focusOwnedTextures?.has(tex)) return;
+    if (tex === keepA || tex === keepB) return;
+    this._focusOwnedTextures.delete(tex);
+    tex.dispose();
+  }
+
+  _disposeClosingPlate() {
+    if (!this._closingPlate) return;
+    const { mesh } = this._closingPlate;
+    this._closingPlate = null;
+    if (mesh) {
+      this.focusOverlayScene?.remove(mesh);
+      this.scene.remove(mesh);
+      mesh.material?.dispose?.();
+      mesh.geometry?.dispose?.();
+    }
+    if (!this.focusPlate && this._focusOwnedTextures) {
+      for (const tex of this._focusOwnedTextures) tex.dispose();
+      this._focusOwnedTextures.clear();
+    }
+  }
+
   _disposeFocusPlate() {
     if (this.focusPlateOwnedTexture) {
+      this._focusOwnedTextures?.delete(this.focusPlateOwnedTexture);
       this.focusPlateOwnedTexture.dispose();
       this.focusPlateOwnedTexture = null;
+    }
+    if (this._focusOwnedTextures && !this._closingPlate) {
+      for (const tex of this._focusOwnedTextures) tex.dispose();
+      this._focusOwnedTextures.clear();
     }
     if (!this.focusPlate) return;
     this.focusOverlayScene?.remove(this.focusPlate);
@@ -602,7 +656,6 @@ export class PhotoUniverse {
       child.geometry?.dispose?.();
     }
     this.focusPlate.clear();
-    this.focusPlate.material.map = null;
     this.focusPlate.material.dispose();
     this.focusPlate.geometry.dispose();
     this.focusPlate = null;
@@ -658,21 +711,24 @@ export class PhotoUniverse {
   }
 
   /**
-   * Fly the camera smoothly to gaze at a physical 3D photograph card in situ,
-   * dimming the surrounding 2,999 prints and mounting a full-resolution hero plate.
+   * Monopo Full-Frame Borderless WebGL Liquid-Displacement Exhibition:
+   * Blooms the clicked 3D photograph card out of its physical slot via a 32x24
+   * subdivided shader mesh with second-order spring physics & silk paper curl,
+   * and runs an optical liquid-displacement crossfade when stepping between prints.
    */
-  focusPhoto(photoIndex, preferredInstanceIndex = -1) {
+  focusPhoto(photoIndex, preferredInstanceIndex = -1, options = {}) {
     if (this.film || !this.instances.length) return false;
     const instanceIndex = this._findBestInstanceForPhoto(photoIndex, preferredInstanceIndex);
     if (instanceIndex < 0) return false;
 
+    this._disposeClosingPlate();
+    this.thresholdState = null;
     this.flushDamping();
     if (this.parallaxGroup) {
       this.pointerTarget?.set(0, 0);
       this.pointerCurrent?.set(0, 0);
       this.parallaxGroup.rotation.set(0, 0, 0);
     }
-    // Settle any active morph so the card sits on a stable world pose.
     if (this.instanceDirty) {
       if (this.morph?.scrollControlled) {
         if (this.scrollTimeline) {
@@ -691,7 +747,77 @@ export class PhotoUniverse {
       }
     }
 
-    const saved = this.focusState?.saved || {
+    const computeHeroScale = (baseMag, zMag, meta) => {
+      if (meta?.width > 0 && meta?.height > 0) {
+        const nativeAspect = clamp(meta.width / meta.height, 0.62, 1.85);
+        const root = Math.sqrt(nativeAspect / 1.5);
+        return new THREE.Vector3(baseMag * root, baseMag / root, zMag);
+      }
+      return new THREE.Vector3(baseMag, baseMag, zMag);
+    };
+
+    const computeGazeDist = (scaleVec) => {
+      const cardW = 1.08 * Math.abs(scaleVec.x);
+      const cardH = 0.72 * Math.abs(scaleVec.y);
+      const vHalfTan = Math.tan(THREE.MathUtils.degToRad(GAZE_FOV * 0.5));
+      const hHalfTan = Math.max(0.24, vHalfTan * this.camera.aspect);
+      return Math.max(1.45, (cardH * 0.5) / (vHalfTan * 0.76), (cardW * 0.5) / (hHalfTan * 0.82));
+    };
+
+    this.scene.updateMatrixWorld(true);
+    const inst = this.instances[instanceIndex];
+    const photoMeta = this.photos?.[photoIndex];
+    const uniforms = this.ensurePhotoUniforms();
+
+    // Seamless in-stage liquid crossfade when stepping while already in exhibition mode
+    if (this.focusState && this.focusPlate) {
+      const st = this.focusState;
+      const heroScale = computeHeroScale(st.baseMag, st.zMag, photoMeta);
+      const gazeDist = computeGazeDist(heroScale);
+      const camDest = st.heroPos.clone().addScaledVector(st.normal, gazeDist);
+      const flowDir = Number(options?.flowDir) >= 0 ? 1 : -1;
+
+      st.photoIndex = photoIndex;
+      st.instanceIndex = instanceIndex;
+      st.scaleFrom = this.focusPlate.scale.clone();
+      st.heroScale = heroScale;
+      st.scaleProgress = this.reducedMotion ? 1 : 0;
+      st.scaleVel = 0;
+      st.transitionElapsed = 0;
+      st.transitionDuration = this.reducedMotion ? 0.001 : 0.68;
+      st.curlBoost = this.reducedMotion ? 0 : 0.52 * flowDir;
+      st.plateReady = false;
+
+      if (this.reducedMotion) {
+        this.camera.position.copy(camDest);
+        this.focusPlate.scale.copy(heroScale);
+      } else if (this.camera.position.distanceTo(camDest) > 0.01) {
+        this.viewTransition = {
+          elapsed: 0,
+          duration: 0.58,
+          fromPosition: this.camera.position.clone(),
+          position: camDest,
+          fromTarget: this.controls.target.clone(),
+          target: st.heroPos.clone(),
+          fromUp: this.camera.up.clone(),
+          up: st.cardUp.clone(),
+          fromFov: this.camera.fov,
+          fov: GAZE_FOV,
+          fromRotation: this.group.quaternion.clone(),
+          rotation: this.group.quaternion.clone(),
+          fromOffset: { x: 0, y: 0 },
+          toOffset: { x: 0, y: 0 },
+        };
+      }
+      this._mountFocusHeroPlate(photoIndex, inst, st.cardPos, st.heroPos, st.cardQuat, st.scaleFrom, heroScale, {
+        stepping: true,
+        flowDir,
+      });
+      this.callbacks.onFocusChange?.({ active: true, photoIndex, instanceIndex });
+      return true;
+    }
+
+    const saved = {
       position: this.camera.position.clone(),
       target: this.controls.target.clone(),
       up: this.camera.up.clone(),
@@ -705,8 +831,6 @@ export class PhotoUniverse {
         : restingViewFractions(this.camera.aspect),
     };
 
-    this.scene.updateMatrixWorld(true);
-    const inst = this.instances[instanceIndex];
     inst.mesh.getMatrixAt(inst.localIndex, this.dummy.matrix);
     const worldMat = (this._focusMat ||= new THREE.Matrix4()).multiplyMatrices(inst.mesh.matrixWorld, this.dummy.matrix);
     const cardPos = new THREE.Vector3();
@@ -725,26 +849,17 @@ export class PhotoUniverse {
       cardQuat.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), Math.PI));
       cardUp.negate();
     }
-    const photoMeta = this.photos?.[photoIndex];
-    let heroScale;
-    if (photoMeta?.width > 0 && photoMeta?.height > 0) {
-      const nativeAspect = clamp(photoMeta.width / photoMeta.height, 0.62, 1.85);
-      const baseMag = (Math.hypot(cardScale.x, cardScale.y) / Math.SQRT2) * 1.48;
-      const root = Math.sqrt(nativeAspect / 1.5);
-      heroScale = new THREE.Vector3(baseMag * root, baseMag / root, Math.abs(cardScale.z || 1) * 1.45);
-    } else {
-      heroScale = cardScale.clone().multiplyScalar(1.45);
-    }
-    const heroPos = cardPos.clone().addScaledVector(normal, 2.1);
-    const cardW = 1.12 * Math.abs(heroScale.x);
-    const cardH = 0.76 * Math.abs(heroScale.y);
-    const vHalfTan = Math.tan(THREE.MathUtils.degToRad(GAZE_FOV * 0.5));
-    const hHalfTan = Math.max(0.24, vHalfTan * this.camera.aspect);
-    const gazeDist = Math.max(1.85, (cardH * 0.5) / (vHalfTan * 0.64), (cardW * 0.5) / (hHalfTan * 0.70));
+
+    const baseMag = (Math.hypot(cardScale.x, cardScale.y) / Math.SQRT2) * 1.56;
+    const zMag = Math.abs(cardScale.z || 1) * 1.52;
+    const heroScale = computeHeroScale(baseMag, zMag, photoMeta);
+    const heroPos = cardPos.clone().addScaledVector(normal, 2.2);
+    const gazeDist = computeGazeDist(heroScale);
     const camDest = heroPos.clone().addScaledVector(normal, gazeDist);
 
-    const uniforms = this.ensurePhotoUniforms();
     uniforms.uFocusWorld.value.copy(cardPos);
+    (this.focusPointerTarget ||= new THREE.Vector2()).set(0, 0);
+    (this.focusPointerCurrent ||= new THREE.Vector2()).set(0, 0);
 
     this.focusState = {
       photoIndex,
@@ -753,9 +868,19 @@ export class PhotoUniverse {
       heroPos,
       cardQuat,
       cardScale,
+      scaleFrom: cardScale.clone(),
       heroScale,
-      elapsed: this.reducedMotion ? 0.85 : 0,
-      duration: 0.85,
+      normal,
+      cardUp,
+      baseMag,
+      zMag,
+      springValue: this.reducedMotion ? 1 : 0,
+      springVel: 0,
+      scaleProgress: this.reducedMotion ? 1 : 0,
+      scaleVel: 0,
+      transitionElapsed: 1,
+      transitionDuration: 0.68,
+      curlBoost: 0,
       saved,
       plateReady: false,
     };
@@ -777,7 +902,7 @@ export class PhotoUniverse {
     } else {
       this.viewTransition = {
         elapsed: 0,
-        duration: 1.05,
+        duration: 1.02,
         fromPosition: this.camera.position.clone(),
         position: camDest,
         fromTarget: this.controls.target.clone(),
@@ -796,125 +921,154 @@ export class PhotoUniverse {
     this.camera.updateProjectionMatrix();
     this.applyViewOffset();
 
-    // Mount levitating hero plate starting seamlessly from the physical print's slot.
-    this._mountFocusHeroPlate(photoIndex, inst, cardPos, heroPos, cardQuat, cardScale, heroScale);
+    this._mountFocusHeroPlate(photoIndex, inst, cardPos, heroPos, cardQuat, cardScale, heroScale, {
+      stepping: false,
+      flowDir: 1,
+    });
     this.callbacks.onFocusChange?.({ active: true, photoIndex, instanceIndex });
     return true;
   }
 
-  _setFocusPlateUvRect(u0, v0, uw, vh) {
-    const uv = this.focusPlate?.geometry?.getAttribute('uv');
-    if (!uv) return;
-    uv.setXY(0, u0, v0 + vh);
-    uv.setXY(1, u0 + uw, v0 + vh);
-    uv.setXY(2, u0, v0);
-    uv.setXY(3, u0 + uw, v0);
-    uv.needsUpdate = true;
-  }
-
-  _mountFocusHeroPlate(photoIndex, inst, cardPos, heroPos, cardQuat, cardScale, heroScale) {
-    const generation = ++this.focusGeneration;
-    if (this.focusPlateOwnedTexture) {
-      this.focusPlateOwnedTexture.dispose();
-      this.focusPlateOwnedTexture = null;
-    }
+  _mountFocusHeroPlate(photoIndex, inst, cardPos, heroPos, cardQuat, cardScale, heroScale, { stepping = false, flowDir = 1 } = {}) {
+    this.focusGeneration = (this.focusGeneration || 0) + 1;
+    const generation = this.focusGeneration;
+    this._focusOwnedTextures ||= new Set();
     this.focusOverlayScene ||= new THREE.Scene();
+
     if (!this.focusPlate) {
-      const geometry = new THREE.PlaneGeometry(1.08, 0.72);
-      const material = new THREE.MeshBasicMaterial({
-        color: '#ffffff',
-        side: THREE.DoubleSide,
+      const geometry = new THREE.PlaneGeometry(1.08, 0.72, 32, 24);
+      const blankTex = this._getBlankFocusTexture();
+      const liquidMat = new THREE.ShaderMaterial({
         transparent: true,
-        opacity: 1,
         depthTest: false,
         depthWrite: false,
         toneMapped: false,
-      });
-      this.focusPlate = new THREE.Mesh(geometry, material);
-      this.focusPlate.frustumCulled = false;
-      this.focusPlate.renderOrder = 8;
-
-      // Museum archival paper mat + soft darkroom ambient halo behind the levitating print
-      const frameGeo = new THREE.PlaneGeometry(1.48, 1.08);
-      const frameMat = new THREE.ShaderMaterial({
-        transparent: true,
-        depthTest: false,
-        depthWrite: false,
         side: THREE.DoubleSide,
         uniforms: {
-          uLift: { value: this.reducedMotion ? 1 : 0 },
-          uAspectScale: { value: new THREE.Vector2(1, 1) },
+          uTexPrev: { value: blankTex },
+          uTexCurr: { value: blankTex },
+          uUvRectPrev: { value: new THREE.Vector4(0, 0, 1, 1) },
+          uUvRectCurr: { value: new THREE.Vector4(0, 0, 1, 1) },
+          uMix: { value: 1 },
+          uFlowDir: { value: 1 },
+          uCurl: { value: 0 },
+          uTilt: { value: new THREE.Vector2(0, 0) },
+          uOpacity: { value: 1 },
+          uTime: { value: 0 },
         },
         vertexShader: `
+          uniform float uCurl;
+          uniform vec2 uTilt;
           varying vec2 vUv;
+          varying float vSheen;
           void main() {
             vUv = uv;
-            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+            vec3 pos = position;
+            vec2 centered = uv - vec2(0.5);
+            float archX = (centered.x * centered.x - 0.0833) * uCurl * 0.42;
+            float waveY = sin(centered.y * 3.14159265) * uCurl * 0.11;
+            float hoverZ = (centered.x * uTilt.x - centered.y * uTilt.y) * 0.075;
+            pos.z += hoverZ - archX + waveY;
+            vSheen = clamp(0.5 + (centered.x * 0.85 + centered.y * 0.55) + (uTilt.x * 0.65 - uTilt.y * 0.45) + uCurl * 0.35, 0.0, 1.0);
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
           }
         `,
         fragmentShader: `
-          uniform float uLift;
-          uniform vec2 uAspectScale;
+          uniform sampler2D uTexPrev;
+          uniform sampler2D uTexCurr;
+          uniform vec4 uUvRectPrev;
+          uniform vec4 uUvRectCurr;
+          uniform float uMix;
+          uniform float uFlowDir;
+          uniform float uOpacity;
+          uniform float uTime;
           varying vec2 vUv;
+          varying float vSheen;
+
+          vec2 mapRect(vec2 uv, vec4 rect) {
+            return rect.xy + clamp(uv, 0.001, 0.999) * rect.zw;
+          }
+
           void main() {
-            vec2 p = (vUv - vec2(0.5)) * vec2(1.48, 1.08) * uAspectScale;
-            vec2 halfPrint = vec2(0.54, 0.36) * uAspectScale;
-            vec2 d = abs(p) - halfPrint;
-            float boxDist = length(max(d, 0.0)) + min(max(d.x, d.y), 0.0);
-            float minScale = min(uAspectScale.x, uAspectScale.y);
-            float borderThickness = 0.013 * minScale;
-            float matMask = 1.0 - smoothstep(borderThickness - 0.002, borderThickness + 0.002, boxDist);
-            float shadowDist = max(0.0, boxDist - borderThickness);
-            float maxHalo = 0.165 * minScale;
-            float edgeFade = 1.0 - smoothstep(maxHalo * 0.42, maxHalo * 0.95, shadowDist);
-            float halo = exp(-shadowDist * 13.0) * 0.64 * edgeFade;
-            vec3 matColor = vec3(0.952, 0.936, 0.904);
-            vec3 shadowColor = vec3(0.01, 0.01, 0.016);
-            vec3 col = mix(shadowColor, matColor, matMask);
-            float alpha = max(matMask * 0.96, halo) * uLift;
+            float t = clamp(uMix, 0.0, 1.0);
+            float env = sin(t * 3.14159265);
+            float rippleA = sin(vUv.y * 7.0 + uTime * 2.2) * cos(vUv.x * 5.0 - uTime * 1.6);
+            float rippleB = sin((vUv.x + vUv.y) * 9.5 - uTime * 2.6) * 0.5;
+            float lens = (0.078 + 0.036 * rippleA + 0.018 * rippleB) * env;
+            vec2 disp = vec2(uFlowDir * lens, (rippleA * 0.022 + rippleB * 0.014) * env);
+
+            vec2 uvPrev = vUv + disp * t;
+            vec2 uvCurr = vUv - disp * (1.0 - t);
+
+            vec4 colPrev = texture2D(uTexPrev, mapRect(uvPrev, uUvRectPrev));
+            vec4 colCurr = texture2D(uTexCurr, mapRect(uvCurr, uUvRectCurr));
+
+            float blend = smoothstep(0.0, 1.0, t);
+            vec3 col = mix(colPrev.rgb, colCurr.rgb, blend);
+            col *= 1.0 + env * 0.065;
+            float sheen = pow(clamp(1.0 - abs(vSheen - 0.52) * 2.1, 0.0, 1.0), 3.0) * 0.032;
+            col += vec3(1.0, 0.97, 0.92) * sheen;
+
+            vec2 edge = min(vUv, vec2(1.0) - vUv);
+            float edgeDist = min(edge.x, edge.y);
+            float aa = max(0.0018, fwidth(edgeDist));
+            float alpha = smoothstep(0.0, aa, edgeDist) * uOpacity;
             if (alpha < 0.003) discard;
             gl_FragColor = vec4(col, alpha);
+            #include <colorspace_fragment>
           }
         `,
       });
-      const frameMesh = new THREE.Mesh(frameGeo, frameMat);
-      frameMesh.position.z = -0.004;
-      frameMesh.frustumCulled = false;
-      frameMesh.renderOrder = 7;
-      this.focusPlate.add(frameMesh);
-      this.focusPlate.userData.frameMat = frameMat;
+      this.focusPlate = new THREE.Mesh(geometry, liquidMat);
+      this.focusPlate.frustumCulled = false;
+      this.focusPlate.renderOrder = 8;
+      this.focusPlate.userData.liquidMat = liquidMat;
       this.focusOverlayScene.add(this.focusPlate);
     }
 
-    const frameMat = this.focusPlate.userData?.frameMat;
-    if (frameMat) {
-      frameMat.uniforms.uLift.value = this.reducedMotion ? 1 : 0;
-      frameMat.uniforms.uAspectScale.value.set(Math.abs(heroScale.x), Math.abs(heroScale.y));
-    }
+    const liquidMat = this.focusPlate.userData.liquidMat;
+    const u = liquidMat.uniforms;
+    const blankTex = this._getBlankFocusTexture();
 
-    // Frame-0 seamless atlas preview while full-resolution print decodes.
     const atlasRectAttr = inst.mesh.geometry.getAttribute('atlasRect');
     const sharedMap = inst.mesh.material.map || null;
+    let nextPreviewTex = blankTex;
+    let rectX = 0, rectY = 0, rectW = 1, rectH = 1;
     if (atlasRectAttr && sharedMap) {
       const base = inst.localIndex * 4;
-      this._setFocusPlateUvRect(
-        atlasRectAttr.array[base],
-        atlasRectAttr.array[base + 1],
-        atlasRectAttr.array[base + 2],
-        atlasRectAttr.array[base + 3],
-      );
-      this.focusPlate.material.map = sharedMap;
-      this.focusPlate.material.opacity = 1;
-      this.focusPlate.material.needsUpdate = true;
-    } else {
-      this._setFocusPlateUvRect(0, 0, 1, 1);
-      this.focusPlate.material.map = null;
-      this.focusPlate.material.opacity = 0;
+      nextPreviewTex = sharedMap;
+      rectX = atlasRectAttr.array[base];
+      rectY = atlasRectAttr.array[base + 1];
+      rectW = atlasRectAttr.array[base + 2];
+      rectH = atlasRectAttr.array[base + 3];
     }
 
-    this.focusPlate.position.copy(this.reducedMotion ? heroPos : cardPos);
-    this.focusPlate.quaternion.copy(cardQuat);
-    this.focusPlate.scale.copy(this.reducedMotion ? heroScale : cardScale);
+    const oldPrev = u.uTexPrev.value;
+    if (stepping && !this.reducedMotion) {
+      u.uTexPrev.value = u.uTexCurr.value || blankTex;
+      u.uUvRectPrev.value.copy(u.uUvRectCurr.value);
+      u.uTexCurr.value = nextPreviewTex;
+      u.uUvRectCurr.value.set(rectX, rectY, rectW, rectH);
+      u.uFlowDir.value = flowDir >= 0 ? 1 : -1;
+      u.uMix.value = 0;
+      u.uOpacity.value = 1;
+      this._releaseOwnedFocusTexture(oldPrev, u.uTexPrev.value, u.uTexCurr.value);
+    } else {
+      const oldCurr = u.uTexCurr.value;
+      u.uTexPrev.value = nextPreviewTex;
+      u.uUvRectPrev.value.set(rectX, rectY, rectW, rectH);
+      u.uTexCurr.value = nextPreviewTex;
+      u.uUvRectCurr.value.set(rectX, rectY, rectW, rectH);
+      u.uMix.value = 1;
+      u.uOpacity.value = sharedMap ? 1 : 0;
+      u.uCurl.value = 0;
+      u.uTilt.value.set(0, 0);
+      this._releaseOwnedFocusTexture(oldPrev, u.uTexPrev.value, u.uTexCurr.value);
+      this._releaseOwnedFocusTexture(oldCurr, u.uTexPrev.value, u.uTexCurr.value);
+      this.focusPlate.position.copy(this.reducedMotion ? heroPos : cardPos);
+      this.focusPlate.quaternion.copy(cardQuat);
+      this.focusPlate.scale.copy(this.reducedMotion ? heroScale : cardScale);
+    }
 
     const photo = this.photos?.[photoIndex];
     if (!photo?.url || typeof Image === 'undefined') return;
@@ -927,23 +1081,26 @@ export class PhotoUniverse {
         photo.width = img.naturalWidth;
         photo.height = img.naturalHeight;
         const nativeAspect = clamp(img.naturalWidth / img.naturalHeight, 0.62, 1.85);
-        const baseMag = (Math.hypot(cardScale.x, cardScale.y) / Math.SQRT2) * 1.48;
         const root = Math.sqrt(nativeAspect / 1.5);
-        this.focusState.heroScale.set(baseMag * root, baseMag / root, Math.abs(cardScale.z || 1) * 1.45);
-        frameMat?.uniforms.uAspectScale.value.set(
-          Math.abs(this.focusState.heroScale.x),
-          Math.abs(this.focusState.heroScale.y),
+        this.focusState.scaleFrom = this.focusPlate.scale.clone();
+        this.focusState.heroScale.set(
+          this.focusState.baseMag * root,
+          this.focusState.baseMag / root,
+          this.focusState.zMag,
         );
+        this.focusState.scaleProgress = this.reducedMotion ? 1 : 0;
+        this.focusState.scaleVel = 0;
       }
       const texture = new THREE.Texture(img);
       texture.colorSpace = THREE.SRGBColorSpace;
       texture.needsUpdate = true;
-      if (this.focusPlateOwnedTexture) this.focusPlateOwnedTexture.dispose();
+      this._focusOwnedTextures.add(texture);
       this.focusPlateOwnedTexture = texture;
-      this._setFocusPlateUvRect(0, 0, 1, 1);
-      this.focusPlate.material.map = texture;
-      this.focusPlate.material.opacity = 1;
-      this.focusPlate.material.needsUpdate = true;
+      const replacedCurr = u.uTexCurr.value;
+      u.uTexCurr.value = texture;
+      u.uUvRectCurr.value.set(0, 0, 1, 1);
+      u.uOpacity.value = 1;
+      this._releaseOwnedFocusTexture(replacedCurr, u.uTexPrev.value, u.uTexCurr.value);
       this.focusState.plateReady = true;
     };
     if (typeof img.decode === 'function') {
@@ -955,16 +1112,38 @@ export class PhotoUniverse {
 
   closeFocus(instant = false, notify = true) {
     if (!this.focusState) return false;
-    const { saved } = this.focusState;
+    const { saved, cardPos, cardScale } = this.focusState;
     this.focusState = null;
-    this.focusGeneration++;
-    this._disposeFocusPlate();
+    this.focusGeneration = (this.focusGeneration || 0) + 1;
+    this.focusPointerTarget?.set(0, 0);
+    this.focusPointerCurrent?.set(0, 0);
+
+    const uniforms = this.ensurePhotoUniforms();
+    uniforms.uFocusWorld.value.set(0, 0, 9999);
+
+    if (!instant && !this.reducedMotion && this.focusPlate) {
+      this._disposeClosingPlate();
+      this._closingPlate = {
+        mesh: this.focusPlate,
+        fromPos: this.focusPlate.position.clone(),
+        toPos: cardPos.clone(),
+        fromScale: this.focusPlate.scale.clone(),
+        toScale: cardScale.clone(),
+        elapsed: 0,
+        duration: 0.48,
+      };
+      this.focusPlate = null;
+      this.focusPlateOwnedTexture = null;
+    } else {
+      this._disposeClosingPlate();
+      this._disposeFocusPlate();
+    }
+
     this.controls.enabled = !this.scrollTimeline;
     this.defaultView = saved.defaultView;
     this.heldViewOffset = saved.heldViewOffset;
     this.running = saved.running;
 
-    const uniforms = this.ensurePhotoUniforms();
     if (instant || this.reducedMotion) {
       this.camera.position.copy(saved.position);
       this.controls.target.copy(saved.target);
@@ -1009,6 +1188,8 @@ export class PhotoUniverse {
       this.scrollTimeline = null;
       if (this.controls) this.controls.enabled = true;
     }
+    this.thresholdState = null;
+    this._disposeClosingPlate();
     this._disposeFocusPlate();
     for (const mesh of this.meshes) {
       this.group.remove(mesh);
@@ -1209,7 +1390,32 @@ export class PhotoUniverse {
       try { this.renderer.compile(this.scene, this.camera); } catch {}
     }
 
-    // 2.25s Deep-Space Stardust Convergence ritual on initial load / album import.
+    // Igloo / Resn Threshold Gate: hold the assembled six-spectrum crystal in
+    // intimate telephoto bokeh (FOV 36, blur 0.88) until the user's first gesture.
+    if (options?.threshold && !this.reducedMotion && this.instances.length && this.mode === 'orbit' && !this.film) {
+      const restPos = new THREE.Vector3(...orbitPosition(this.camera.aspect));
+      const gatePos = restPos.clone().multiplyScalar(0.74);
+      this.thresholdState = {
+        active: true,
+        unlocking: false,
+        blur: 0.88,
+        elapsed: 0,
+        duration: 1.8,
+      };
+      this.reveal = null;
+      uniforms.uReveal.value = 1;
+      this.camera.position.copy(gatePos);
+      this.camera.fov = 36;
+      this.controls.target.set(0, 0, 0);
+      this.controls.enabled = false;
+      this.viewTransition = null;
+      this.camera.lookAt(this.controls.target);
+      this.camera.updateProjectionMatrix();
+      this.applyViewOffset();
+      return;
+    }
+
+    // 2.25s Deep-Space Stardust Convergence ritual on album import / reset.
     if (options?.genesis && !this.reducedMotion && this.instances.length) {
       this.euler ||= new THREE.Euler();
       this.instances.forEach((instance, index) => {
@@ -1242,14 +1448,14 @@ export class PhotoUniverse {
       this.uploadInstanceMatrices();
       if (this.mode === 'orbit' && !this.film) {
         const restPos = new THREE.Vector3(...orbitPosition(this.camera.aspect));
-        const farPos = restPos.clone().multiplyScalar(1.22);
         const restQuat = this.group.quaternion.clone();
+        const restOff = restingViewFractions(this.camera.aspect);
+        const farPos = restPos.clone().multiplyScalar(1.22);
         const startQuat = restQuat.clone().multiply(
           new THREE.Quaternion().setFromEuler(this.euler.set(-0.08, -0.32, 0.04))
         );
         this.camera.position.copy(farPos);
         this.group.quaternion.copy(startQuat);
-        const restOff = restingViewFractions(this.camera.aspect);
         this.viewTransition = {
           elapsed: 0,
           duration: 2.25,
@@ -1267,6 +1473,50 @@ export class PhotoUniverse {
         };
       }
     }
+  }
+
+  /**
+   * Igloo / Resn Optical Rack-Focus Entry:
+   * Smoothly pulls focus (blur 0.88 -> 0) and pulls camera back (FOV 36 -> 54)
+   * over 1.8s on the user's first gentle wheel or click gesture.
+   */
+  unlockThreshold() {
+    if (!this.thresholdState || this.thresholdState.unlocking) return false;
+    if (this.reducedMotion) {
+      this.thresholdState = null;
+      if (this.controls) this.controls.enabled = !this.scrollTimeline && !this.film && !this.focusState;
+      this.resetView(true);
+      return true;
+    }
+    this.thresholdState.unlocking = true;
+    this.thresholdState.elapsed = 0;
+    this.thresholdState.duration = 1.8;
+    const restPos = new THREE.Vector3(...orbitPosition(this.camera.aspect));
+    const restQuat = new THREE.Quaternion().setFromEuler(
+      new THREE.Euler(...restRotation(this.camera.aspect))
+    );
+    const restOff = restingViewFractions(this.camera.aspect);
+    const fromOff = this.camera.view?.enabled
+      ? { x: this.camera.view.offsetX / this.camera.view.fullWidth, y: this.camera.view.offsetY / this.camera.view.fullHeight }
+      : restOff;
+    this.viewTransition = {
+      elapsed: 0,
+      duration: 1.8,
+      fromPosition: this.camera.position.clone(),
+      position: restPos,
+      fromTarget: this.controls.target.clone(),
+      target: new THREE.Vector3(0, 0, 0),
+      fromUp: this.camera.up.clone(),
+      up: new THREE.Vector3(0, 1, 0),
+      fromFov: this.camera.fov,
+      fov: 54,
+      fromRotation: this.group.quaternion.clone(),
+      rotation: restQuat,
+      fromOffset: fromOff,
+      toOffset: restOff,
+    };
+    this.defaultView = true;
+    return true;
   }
 
   setFormation(mode, instant = false, resetCamera = true, durationOverride = null) {
@@ -1545,6 +1795,7 @@ export class PhotoUniverse {
     if (this.film) return;
     if (this.focusState) this.closeFocus(true);
     if (this.scrollTimeline) this.exitScrollTimeline(false);
+    this.thresholdState = null;
     this.flushDamping();
     // Bake the tiny interactive parent tilt into the sculpture before removing
     // parallax, preserving exactly the same world pose on the capture's first frame.
@@ -1694,6 +1945,10 @@ export class PhotoUniverse {
 
   setScrollTimeline(seconds, { immediate = false } = {}) {
     if (this.focusState) this.closeFocus(true);
+    if (this.thresholdState && !this.thresholdState.unlocking) {
+      this.thresholdState.unlocking = true;
+      this.thresholdState.elapsed = 0;
+    }
     if (this.film) {
       const filmTime = this.film.elapsed || 0;
       this.stopFilm(false, false);
@@ -1996,7 +2251,8 @@ export class PhotoUniverse {
   }
 
   _renderFrame(timeSeconds) {
-    const focusBlur = clamp(this.photoUniforms?.uFocusAmount?.value || 0, 0, 1);
+    const thresholdBlur = this.thresholdState ? (this.thresholdState.blur || 0) : 0;
+    const focusBlur = clamp(Math.max(this.photoUniforms?.uFocusAmount?.value || 0, thresholdBlur), 0, 1);
     if (this.darkroomPipeline?.enabled) {
       const morphImpulse = this.morph
         ? Math.sin(Math.PI * clamp(this.morph.elapsed / Math.max(0.01, this.morph.duration), 0, 1))
@@ -2011,7 +2267,7 @@ export class PhotoUniverse {
     } else {
       this.renderer.render(this.scene, this.camera);
     }
-    if (this.focusPlate && this.focusOverlayScene && this.focusState) {
+    if (this.focusOverlayScene && ((this.focusPlate && this.focusState) || this._closingPlate)) {
       const prevAutoClear = this.renderer.autoClear;
       this.renderer.autoClear = false;
       this.renderer.render(this.focusOverlayScene, this.camera);
@@ -2089,6 +2345,25 @@ export class PhotoUniverse {
         }
       } else {
         this._slowFrames = Math.max(0, (this._slowFrames || 0) - 1);
+      }
+    }
+
+    if (this.thresholdState) {
+      if (this.thresholdState.unlocking) {
+        this.thresholdState.elapsed = Math.min(
+          this.thresholdState.duration,
+          this.thresholdState.elapsed + dt,
+        );
+        const p = clamp(this.thresholdState.elapsed / Math.max(1e-6, this.thresholdState.duration), 0, 1);
+        this.thresholdState.blur = 0.88 * Math.pow(1 - p, 2.8);
+        if (this.thresholdState.elapsed >= this.thresholdState.duration) {
+          this.thresholdState = null;
+          if (this.controls && !this.film && !this.focusState && !this.scrollTimeline) {
+            this.controls.enabled = true;
+          }
+        }
+      } else {
+        this.thresholdState.blur = 0.88;
       }
     }
 
@@ -2193,17 +2468,78 @@ export class PhotoUniverse {
       this.scene.fog.density = THREE.MathUtils.lerp(this.scene.fog.density, density, 1 - Math.exp(-dt * 3));
     }
     if (this.focusPlate && this.focusState) {
-      this.focusState.elapsed = Math.min(this.focusState.duration, this.focusState.elapsed + dt);
-      const lift = easeInOut(this.focusState.elapsed / Math.max(1e-6, this.focusState.duration));
-      this.focusPlate.position.lerpVectors(this.focusState.cardPos, this.focusState.heroPos, lift);
-      this.focusPlate.scale.lerpVectors(this.focusState.cardScale, this.focusState.heroScale, lift);
-      const frameMat = this.focusPlate.userData?.frameMat;
-      if (frameMat) {
-        frameMat.uniforms.uLift.value = lift;
-        frameMat.uniforms.uAspectScale.value.set(
-          Math.abs(this.focusPlate.scale.x),
-          Math.abs(this.focusPlate.scale.y),
-        );
+      const st = this.focusState;
+      if (this.reducedMotion) {
+        st.springValue = 1;
+        st.springVel = 0;
+        st.scaleProgress = 1;
+        st.scaleVel = 0;
+        st.transitionElapsed = st.transitionDuration;
+        st.curlBoost = 0;
+      } else {
+        const substeps = Math.max(1, Math.ceil(dt / 0.008));
+        const h = dt / substeps;
+        const kPos = 185;
+        const cPos = 24.5;
+        for (let i = 0; i < substeps; i++) {
+          const acc = (1 - st.springValue) * kPos - st.springVel * cPos;
+          st.springVel += acc * h;
+          st.springValue += st.springVel * h;
+          const sAcc = (1 - st.scaleProgress) * kPos - st.scaleVel * cPos;
+          st.scaleVel += sAcc * h;
+          st.scaleProgress += st.scaleVel * h;
+        }
+        if (Math.abs(1 - st.springValue) < 4e-5 && Math.abs(st.springVel) < 1e-3) {
+          st.springValue = 1;
+          st.springVel = 0;
+        }
+        if (Math.abs(1 - st.scaleProgress) < 4e-5 && Math.abs(st.scaleVel) < 1e-3) {
+          st.scaleProgress = 1;
+          st.scaleVel = 0;
+        }
+        st.transitionElapsed = Math.min(st.transitionDuration, (st.transitionElapsed ?? 1) + dt);
+        st.curlBoost = (st.curlBoost || 0) * Math.exp(-dt * 6.5);
+      }
+
+      this.focusPlate.position.lerpVectors(st.cardPos, st.heroPos, st.springValue);
+      this.focusPlate.scale.lerpVectors(st.scaleFrom || st.cardScale, st.heroScale, st.scaleProgress);
+
+      const liquidMat = this.focusPlate.userData?.liquidMat;
+      if (liquidMat) {
+        const lu = liquidMat.uniforms;
+        lu.uTime.value = time * 0.001;
+        const mixRaw = clamp((st.transitionElapsed ?? 1) / Math.max(1e-6, st.transitionDuration || 0.68), 0, 1);
+        const mixEased = 1 - Math.pow(1 - mixRaw, 3);
+        lu.uMix.value = mixEased;
+        if (mixRaw >= 1 && lu.uTexPrev.value !== lu.uTexCurr.value) {
+          const donePrev = lu.uTexPrev.value;
+          lu.uTexPrev.value = lu.uTexCurr.value;
+          lu.uUvRectPrev.value.copy(lu.uUvRectCurr.value);
+          this._releaseOwnedFocusTexture(donePrev, lu.uTexPrev.value, lu.uTexCurr.value);
+        }
+        const fTarget = this.focusPointerTarget ||= new THREE.Vector2();
+        const fCurr = this.focusPointerCurrent ||= new THREE.Vector2();
+        if (this.reducedMotion) fCurr.set(0, 0);
+        else fCurr.lerp(fTarget, 1 - Math.exp(-dt * 7.5));
+        lu.uTilt.value.copy(fCurr);
+        lu.uCurl.value = clamp(st.springVel * 0.14 + (st.curlBoost || 0), -0.85, 0.85);
+      }
+    }
+    if (this._closingPlate) {
+      const cp = this._closingPlate;
+      cp.elapsed = Math.min(cp.duration, cp.elapsed + dt);
+      const t = clamp(cp.elapsed / Math.max(1e-6, cp.duration), 0, 1);
+      const ease = easeInOut(t);
+      cp.mesh.position.lerpVectors(cp.fromPos, cp.toPos, ease);
+      cp.mesh.scale.lerpVectors(cp.fromScale, cp.toScale, ease);
+      const lu = cp.mesh.userData?.liquidMat?.uniforms;
+      if (lu) {
+        lu.uTime.value = time * 0.001;
+        lu.uOpacity.value = 1 - Math.pow(t, 1.5);
+        lu.uCurl.value = -Math.sin(t * Math.PI) * 0.42;
+      }
+      if (cp.elapsed >= cp.duration) {
+        this._disposeClosingPlate();
       }
     }
     if (this.atmosphere) {
@@ -2254,6 +2590,10 @@ export class PhotoUniverse {
   dispose() {
     this.renderer.setAnimationLoop(null);
     this.clearPhotos();
+    if (this._blankFocusTexture) {
+      this._blankFocusTexture.dispose();
+      this._blankFocusTexture = null;
+    }
     if (this.atmosphere) {
       this.scene.remove(this.atmosphere.mesh);
       this.atmosphere.dispose();

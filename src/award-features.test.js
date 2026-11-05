@@ -6,6 +6,7 @@ import { rgbToSpectralKey, extractPhotoMood, createAtmosphereField, createDustFi
 import { SpatialSoundscape } from './audio.js';
 import { AlbumVault } from './storage.js';
 import {
+  loadDemoPhotos,
   loadLocalPhotos,
   buildPhotoAtlases,
   releasePhotos,
@@ -367,7 +368,9 @@ test('PhotoUniverse supports 2.25s stardust genesis, 3D in-situ camera gaze, liv
   assert.equal(O.meshes.length, meshCountBefore, 'hero plate never pollutes instanced raycast meshes');
   assert.ok(O.focusPlate, 'hero plate is mounted in overlay scene');
   assert.ok(O.focusOverlayScene?.children.includes(O.focusPlate), 'hero plate renders in crisp post-bokeh overlay scene');
-  assert.ok(O.focusPlate.userData.frameMat, 'museum archival mat border shader is attached');
+  assert.ok(O.focusPlate.userData.liquidMat, 'Monopo borderless liquid-displacement shader is attached');
+  assert.equal(O.focusPlate.geometry.parameters.widthSegments, 32, '32x24 subdivided silk mesh');
+  assert.equal(O.focusPlate.geometry.parameters.heightSegments, 24);
   for (let t = 2350; t <= 3500; t += 50) O.animate(t);
   assert.equal(O.camera.fov, 42);
   assert.ok(O.photoUniforms.uFocusAmount.value > 0.95, 'surrounding cards dim via shader uniform');
@@ -754,5 +757,99 @@ test('PhotoUniverse scroll-driven 5-act scrollytelling traverses forward/backwar
 
   O.exitScrollTimeline(true);
   assert.equal(O.scrollTimeline, null);
+  O.clearPhotos();
+});
+
+test('Extended 120-photo curated HD archive verifies every JPEG header, six-spectrum balance, and 100% dated Year Chapters', async () => {
+  const pubRoot = new URL('../public/', import.meta.url);
+  const origFetch = globalThis.fetch;
+  const origLocation = globalThis.location;
+  globalThis.location = { href: 'http://memoria.local/' };
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input), 'http://memoria.local/');
+    const rel = url.pathname.replace(/^\//, '');
+    const buf = await readFile(new URL(rel, pubRoot));
+    return new Response(buf, { status: 200 });
+  };
+  try {
+    const { photos } = await loadDemoPhotos(undefined, { extended: true });
+    assert.equal(photos.length, 120, '24 editorial + 96 archive = 120 full-HD photographs');
+    for (const p of photos) {
+      assert.ok(p.width >= 720 && p.height >= 720 && Math.max(p.width, p.height) >= 1200, `${p.id} is full-HD (${p.width}x${p.height})`);
+      assert.ok(p.author && p.author.length > 0, `${p.id} carries photographer credit`);
+      assert.ok(p.title && p.title.length > 0, `${p.id} carries curatorial title`);
+      assert.equal(p.license, 'Unsplash License');
+      assert.ok(Number.isInteger(p.capturedYear) && p.capturedYear >= 2010 && p.capturedYear <= 2026, `${p.id} has valid archival year ${p.capturedYear}`);
+    }
+    const chapters = buildYearChapters(photos);
+    assert.ok(chapters.length >= 10, 'rich multi-year chapter timeline');
+    assert.equal(chapters.some(ch => ch.key === 'undated'), false, 'zero undated demo photographs');
+    const totalInChapters = chapters.reduce((acc, ch) => acc + ch.count, 0);
+    assert.equal(totalInChapters, 120);
+  } finally {
+    globalThis.fetch = origFetch;
+    globalThis.location = origLocation;
+  }
+});
+
+test('PhotoUniverse supports Threshold Gate 1.8s optical rack-focus and in-stage GLSL liquid displacement crossfade', () => {
+  const O = makeSceneHarness(1440, 900);
+  const photos = Array.from({ length: 12 }, (_, i) => ({
+    index: i,
+    spectralKey: i / 12,
+    width: i % 2 === 0 ? 1280 : 854,
+    height: i % 2 === 0 ? 854 : 1280,
+  }));
+  const atlases = [{
+    canvas: { width: 2048, height: 2048 },
+    photoIndices: Array.from({ length: 12 }, (_, i) => i),
+  }];
+
+  O.setPhotos(photos, atlases, 300, { genesis: true, threshold: true });
+  assert.ok(O.thresholdState && O.thresholdState.active === true);
+  assert.equal(O.thresholdState.blur, 0.88);
+  assert.equal(O.camera.fov, 36, 'telephoto close-up threshold framing');
+  assert.equal(O.controls.enabled, false);
+
+  let clock = 50;
+  for (; clock <= 500; clock += 50) O.animate(clock);
+  assert.equal(O.camera.fov, 36, 'resize/animate holds telephoto gate until user gesture');
+  assert.equal(O.thresholdState.blur, 0.88);
+
+  assert.equal(O.unlockThreshold(), true);
+  assert.equal(O.unlockThreshold(), false, 'idempotent while already unlocking');
+  for (; clock <= 950; clock += 50) O.animate(clock);
+  assert.ok(O.thresholdState.blur > 0.05 && O.thresholdState.blur < 0.85, 'smooth mid-rack-focus bokeh melt');
+  for (; clock <= 2500; clock += 50) O.animate(clock);
+  assert.equal(O.thresholdState, null, 'threshold rack-focus completes cleanly at 1.8s');
+  assert.equal(O.camera.fov, 54);
+  assert.equal(O.controls.enabled, true);
+
+  // Enter Monopo full-frame exhibition on landscape photo 0, then liquid-step to portrait photo 1
+  assert.equal(O.focusPhoto(0, 0, { flowDir: 1 }), true);
+  for (; clock <= 3600; clock += 50) O.animate(clock);
+  assert.ok(1.08 * O.focusPlate.scale.x > 0.72 * O.focusPlate.scale.y, 'landscape print proportions');
+  const stageHeroPos = O.focusState.heroPos.clone();
+
+  assert.equal(O.focusPhoto(1, -1, { flowDir: -1 }), true);
+  const lu = O.focusPlate.userData.liquidMat.uniforms;
+  assert.equal(lu.uFlowDir.value, -1);
+  assert.equal(lu.uMix.value, 0, 'liquid displacement crossfade starts at uMix = 0');
+  assert.ok(O.focusState.heroPos.distanceTo(stageHeroPos) < 1e-5, 'stepping keeps exhibition stage anchored in front of viewer');
+
+  O.animate((clock += 50));
+  assert.ok(lu.uMix.value > 0 && lu.uMix.value < 1 && Math.abs(lu.uCurl.value) > 0.01, 'mid-step drives GLSL liquid mix & silk curl');
+  for (; clock <= 4700; clock += 50) O.animate(clock);
+  assert.equal(lu.uMix.value, 1);
+  assert.ok(0.72 * O.focusPlate.scale.y > 1.08 * O.focusPlate.scale.x, 'spring-morphs smoothly into portrait proportions');
+
+  // Closing contracts transient _closingPlate back into card slot and disposes cleanly
+  assert.equal(O.closeFocus(false), true);
+  assert.equal(O.focusState, null);
+  assert.equal(O.focusPlate, null);
+  assert.ok(O._closingPlate, 'transient silk contraction plate bridges exit');
+  for (; clock <= 5400; clock += 50) O.animate(clock);
+  assert.equal(O._closingPlate, null, 'closing plate disposes GPU resources upon settling');
+
   O.clearPhotos();
 });

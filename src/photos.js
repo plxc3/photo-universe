@@ -33,6 +33,33 @@ function demoBaseUrl(directory = 'editorial/') {
   return new URL(directory, new URL(base, globalThis.location?.href || import.meta.url));
 }
 
+const EDITORIAL_TITLES = Object.freeze({
+  'coast-analogue': '海岸银盐 · Coast Analogue',
+  'sea-dark': '黑礁暗涌 · Dark Tide',
+  'sea-mist': '雾海潮声 · Mist Breaker',
+  'mountain-dividing-line': '云岭分界 · Ridge Divide',
+  'architecture-geometry': '混凝土几何 · Concrete Geometry',
+  'brutalist-figure': '粗野阶梯 · Brutalist Ascent',
+  'alpine-mist': '高山薄雾 · Alpine Mist',
+  'traveller-coast': '远岸行者 · Coastal Gazer',
+  'architecture-triangle': '三角天际 · Brutalist Apex',
+  'shore-grey': '灰岸微光 · Pale Shore',
+  'sea-long-exposure': '慢门海浪 · Long Exposure Tide',
+  'shore-analogue': '礁岸胶片 · Rocky Tideline',
+  'mountain-switzerland': '雪峰幽影 · Helvetic Peak',
+  'mountain-glishorn': '格利斯峰 · Clouded Glishorn',
+  'road-fading': '雾隐长路 · Vanishing Road',
+  'road-forest': '林间迷雾 · Fir Corridor',
+  'train-window': '车窗掠影 · Carriage Frame',
+  'train-traveller': '铁道凝望 · Window Passage',
+  'train-woman': '列车旅人 · Quiet Compartment',
+  'hand-on-glass': '玻璃微温 · Hand on Glass',
+  'stairs-shadows': '光影阶梯 · Sunlit Steps',
+  'stairs-metal': '金属扶栏 · Shadow Railings',
+  'barbican-stairs': '巴比肯阶 · Barbican Stairs',
+  'analogue-portrait': '银盐肖像 · Silver Portrait',
+});
+
 function parseArchiveTimestamp(entry) {
   if (Number.isInteger(entry?.capturedYear) && entry.capturedYear >= 1900 && entry.capturedYear <= 2100) {
     return {
@@ -41,10 +68,11 @@ function parseArchiveTimestamp(entry) {
       dateSource: 'archive',
     };
   }
-  const match = String(entry?.downloadUrl || '').match(/photo-(\d{12,13})-/);
+  const match = String(entry?.downloadUrl || '').match(/photo-(\d{10,13})-/);
   if (!match) return null;
-  const ms = Number(match[1]);
-  if (!Number.isFinite(ms) || ms <= 0) return null;
+  const raw = Number(match[1]);
+  if (!Number.isFinite(raw) || raw <= 0) return null;
+  const ms = raw < 1e11 ? raw * 1000 : raw;
   const date = new Date(ms);
   const year = date.getUTCFullYear();
   if (year < 1990 || year > 2100) return null;
@@ -69,9 +97,11 @@ function mapDemoManifest(manifest, base, prefix, offset = 0, assignAspect = fals
     if (thumbnail.origin !== base.origin || !thumbnail.pathname.startsWith(base.pathname)) {
       throw new Error('演示缩略图必须来自本地演示相册。');
     }
+    const rawName = entry.name || `Photo ${offset + index + 1}`;
     const photo = {
       id: entry.id || `${prefix}-${offset + index + 1}`,
-      name: entry.name || `Photo ${offset + index + 1}`,
+      name: rawName,
+      title: entry.title || EDITORIAL_TITLES[rawName] || rawName,
       url: url.href,
       thumbnailUrl: thumbnail.href,
       width: entry.width,
@@ -105,12 +135,22 @@ export async function loadDemoPhotos(onProgress, options = {}) {
   let extraPhotos = [];
   if (options?.extended) {
     try {
-      const collectionBase = demoBaseUrl('photos/');
-      const collectionResponse = await fetch(new URL('manifest.json', collectionBase));
-      if (collectionResponse.ok) {
-        const collectionManifest = await collectionResponse.json();
-        if (Array.isArray(collectionManifest)) {
-          extraPhotos = mapDemoManifest(collectionManifest, collectionBase, 'collection', manifest.length, true);
+      const archiveBase = demoBaseUrl('archive/');
+      const archiveResponse = await fetch(new URL('manifest.json', archiveBase));
+      if (archiveResponse.ok) {
+        const archiveManifest = await archiveResponse.json();
+        if (Array.isArray(archiveManifest) && archiveManifest.length) {
+          extraPhotos = mapDemoManifest(archiveManifest, archiveBase, 'archive', manifest.length, false);
+        }
+      }
+      if (!extraPhotos.length) {
+        const collectionBase = demoBaseUrl('photos/');
+        const collectionResponse = await fetch(new URL('manifest.json', collectionBase));
+        if (collectionResponse.ok) {
+          const collectionManifest = await collectionResponse.json();
+          if (Array.isArray(collectionManifest)) {
+            extraPhotos = mapDemoManifest(collectionManifest, collectionBase, 'collection', manifest.length, true);
+          }
         }
       }
     } catch {

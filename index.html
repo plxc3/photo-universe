@@ -4,18 +4,18 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#020204" />
-    <meta name="description" content="Memoria，照片的立体暗房空间。导入你的相册，在 OKLab 色温星环、螺旋走廊、光学散景凝视与空间声景中重温记忆。" />
+    <meta name="description" content="Memoria，照片的立体暗房空间。导入你的相册，在六大色温星环、螺旋走廊、全画幅液态展映与室内乐声景中重温记忆。" />
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="Memoria" />
     <meta property="og:title" content="Memoria — 记忆的形状 · 三维暗房星图" />
-    <meta property="og:description" content="将多达 3,000 张照片显影为可漫游的色温星环与螺旋走廊，支持原位光学散景凝视与 18 Mbps 音画录制。" />
+    <meta property="og:description" content="将多达 3,000 张照片显影为可漫游的色温星环与螺旋走廊，支持全画幅光学液态展映与 18 Mbps 音画录制。" />
     <meta property="og:url" content="https://plxc3.github.io/photo-universe/" />
     <meta property="og:image" content="https://plxc3.github.io/photo-universe/og-preview.jpg" />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content="Memoria — 记忆的形状 · 三维暗房星图" />
-    <meta name="twitter:description" content="将多达 3,000 张照片显影为可漫游的色温星环与螺旋走廊，支持原位光学散景凝视与 18 Mbps 音画录制。" />
+    <meta name="twitter:description" content="将多达 3,000 张照片显影为可漫游的色温星环与螺旋走廊，支持全画幅光学液态展映与 18 Mbps 音画录制。" />
     <meta name="twitter:image" content="https://plxc3.github.io/photo-universe/og-preview.jpg" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="preload" href="/fonts/newsreader-latin-italic-variable.woff2" as="font" type="font/woff2" crossorigin />
@@ -24,152 +24,246 @@
   </head>
   <body>
     <main id="app">
-      <div id="scene" aria-label="三维照片空间。滚动推进五幕时空叙事，拖动环视偏航，点击照片飞入原位凝视。"></div>
+      <div id="scene" aria-label="三维照片空间。滚动推进五幕时空叙事，拖动环视偏航，点击照片展开全画幅液态暗房展映。"></div>
+
       <div id="cursor-reticle" class="cursor-reticle" aria-hidden="true">
         <span class="reticle-frame"></span>
-        <span class="reticle-tag"><i class="reticle-dot"></i><span id="reticle-number" class="reticle-number"></span><span id="reticle-label" class="reticle-label"></span></span>
+        <span class="reticle-tag">
+          <i class="reticle-dot"></i>
+          <span id="reticle-number" class="reticle-number"></span>
+          <span id="reticle-label" class="reticle-label"></span>
+        </span>
       </div>
-      <header class="topbar chrome">
-        <h1 class="brand">
-          <button id="brand" aria-label="Memoria，重置视角">
-            <span class="brand-word">Memoria</span>
-            <span class="brand-sub" aria-hidden="true">OPTICAL ARCHIVE</span>
-          </button>
-        </h1>
-        <button id="collection" class="collection-button" aria-label="浏览相册">
-          <i data-lucide="grid-2x2" aria-hidden="true"></i>
-          <span id="photo-count" aria-live="polite">正在载入</span>
-        </button>
-        <div class="top-actions">
-          <button class="import-button magnetic" id="import"><i data-lucide="plus" aria-hidden="true"></i><span>导入照片</span></button>
-          <button class="icon-button sound-button magnetic" id="sound-toggle" aria-label="静音空间音效" aria-pressed="true" title="空间音效">
-            <span class="sound-eq" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
-          </button>
-          <button class="icon-button magnetic" id="help" aria-label="使用说明" title="使用说明"><i data-lucide="info" aria-hidden="true"></i></button>
-        </div>
-      </header>
+
+      <div id="timeline-hairline" class="timeline-hairline" aria-hidden="true">
+        <i id="timeline-fill"></i>
+      </div>
+      <div
+        id="timeline-scrub-zone"
+        class="timeline-scrub-zone"
+        role="slider"
+        tabindex="-1"
+        aria-label="拖动底缘调整五幕时空进度"
+        aria-valuemin="0"
+        aria-valuemax="30"
+        aria-valuenow="0"
+        hidden
+      ></div>
+      <progress id="film-progress" class="sr-only" value="0" max="30"></progress>
       <span class="sr-only" id="particle-count"></span>
       <span class="sr-only" id="mode-name" aria-live="polite">星环</span>
-      <footer class="bottom-bar chrome">
-        <nav class="mode-selector" aria-label="照片形态">
-          <button data-mode="orbit" aria-pressed="true">星环</button><button data-mode="tunnel" aria-pressed="false">隧道</button><button data-mode="sphere" aria-pressed="false">星球</button><button data-mode="helix" aria-pressed="false">螺旋</button>
-        </nav>
-        <div class="film-actions">
-          <button class="icon-button magnetic" id="play" aria-label="暂停旋转" title="暂停旋转"><i data-lucide="pause" aria-hidden="true"></i></button>
-          <button id="film" class="tour-button magnetic"><i data-lucide="play" aria-hidden="true"></i><span>30 秒漫游</span></button>
-          <button id="record" class="icon-button magnetic" aria-label="录制 30 秒音画视频" title="录制 30 秒音画视频"><i data-lucide="download" aria-hidden="true"></i></button>
-          <button id="settings" class="icon-button magnetic" aria-label="视图设置" title="视图设置"><i data-lucide="sliders-horizontal" aria-hidden="true"></i></button>
+
+      <section id="stage-hud" class="stage-hud chrome" aria-label="暗房舞台导览">
+        <div class="hud-corner hud-tl">
+          <h1 class="brand">
+            <button id="brand" type="button" class="text-link brand-link" aria-label="Memoria，重置视角">
+              <span class="brand-word">Memoria</span>
+            </button>
+          </h1>
         </div>
-      </footer>
-      <aside id="focus-hud" class="focus-hud" aria-label="照片原位凝视" hidden>
+
+        <div class="hud-corner hud-tr">
+          <button
+            id="sound-toggle"
+            type="button"
+            class="text-link sound-whisper"
+            aria-label="静音空间音效"
+            aria-pressed="true"
+          >
+            <span class="sound-eq" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+            <span class="whisper-label">声景</span>
+          </button>
+          <span class="hud-sep" aria-hidden="true">·</span>
+          <button id="collection" type="button" class="text-link index-whisper" aria-label="打开暗房索引">
+            <span class="whisper-label">索引</span>
+            <span id="photo-count" class="whisper-num" aria-live="polite">0120</span>
+          </button>
+        </div>
+
+        <div class="hud-corner hud-bl">
+          <span id="act-roman" class="act-roman">I</span>
+          <span id="film-act" class="act-name">序幕 · 星环</span>
+          <span id="film-time" class="act-time">滚轮叙事 · 拖动环视</span>
+          <button id="stop-film" type="button" class="text-link stop-whisper" hidden>归位</button>
+        </div>
+
+        <div class="hud-corner hud-br">
+          <button id="film-quick" type="button" class="text-link" aria-label="开启 30 秒漫游">漫游</button>
+          <span class="hud-sep" aria-hidden="true">·</span>
+          <button id="import-quick" type="button" class="text-link" aria-label="导入本地照片">导入</button>
+        </div>
+      </section>
+
+      <aside id="focus-hud" class="focus-hud" aria-label="全画幅暗房展映" hidden>
         <div class="focus-caption" aria-live="polite" aria-atomic="true">
           <div class="focus-meta-row">
             <span id="focus-swatch" class="focus-swatch" aria-hidden="true"></span>
             <span id="focus-number" class="focus-number"></span>
             <span id="focus-tone" class="focus-tone"></span>
           </div>
-          <span id="focus-title" class="focus-title"></span>
+          <div class="focus-title-row">
+            <span id="focus-title" class="focus-title"></span>
+            <span id="focus-author" class="focus-author"></span>
+          </div>
         </div>
-        <div id="focus-strip" class="focus-strip" role="group" aria-label="相邻照片胶片刻度"></div>
+        <div id="focus-strip" class="focus-strip" role="group" aria-label="相邻底片刻度"></div>
         <div class="focus-controls">
-          <button class="icon-button" id="focus-prev" aria-label="上一张照片" title="上一张 (←)"><i data-lucide="arrow-left" aria-hidden="true"></i></button>
-          <button class="icon-button" id="focus-next" aria-label="下一张照片" title="下一张 (→)"><i data-lucide="arrow-right" aria-hidden="true"></i></button>
-          <button class="icon-button" id="focus-close" aria-label="退出凝视" title="退出凝视 (Esc)"><i data-lucide="x" aria-hidden="true"></i></button>
+          <button type="button" class="text-link" id="focus-prev" aria-label="上一张照片">上一帧</button>
+          <span class="hud-sep" aria-hidden="true">·</span>
+          <button type="button" class="text-link" id="focus-next" aria-label="下一张照片">下一帧</button>
+          <span class="hud-sep" aria-hidden="true">·</span>
+          <button type="button" class="text-link" id="focus-close" aria-label="退出展映">归位 <em>Esc</em></button>
         </div>
       </aside>
-      <div class="loader" id="loader" role="status">
-        <span class="loader-kicker" aria-hidden="true">MEMORIA · SILVER HALIDE ARCHIVE</span>
-        <span class="loader-pct" id="loader-pct" aria-hidden="true">00</span>
-        <span class="loader-rule" aria-hidden="true"><i id="loader-bar"></i></span>
-        <span class="loader-orbit" aria-hidden="true"></span>
-        <span id="loading-text">正在整理照片</span>
-        <progress id="loading-progress" class="sr-only" max="100" value="0"></progress>
-      </div>
-      <div class="drop-target" id="drop-target"><i data-lucide="plus" aria-hidden="true"></i><span>放入你的照片</span><p>最多 3,000 张 · 自动按色温光谱编排</p></div>
-      <div class="error-card" id="error-card" hidden><h2>暂时无法打开空间</h2><p id="error-message"></p><button class="button" id="retry">重新打开</button><button class="button" id="browse-fallback">浏览相册</button></div>
-      <div class="scroll-cue chrome" id="scroll-cue" aria-hidden="true">
-        <span class="scroll-cue-line"></span>
-        <span>滚动推进五幕时空 · 拖动环视</span>
-      </div>
-      <div class="film-status" id="film-status" hidden>
-        <div class="film-meta">
-          <span id="film-description">漫游</span>
-          <span class="film-dot" aria-hidden="true">·</span>
-          <span id="film-act">序幕 · 星环</span>
+
+      <div class="loader" id="loader" data-phase="loading" role="region" aria-label="暗房门扉">
+        <div class="loader-dev" id="loader-dev">
+          <span class="loader-kicker" aria-hidden="true">MEMORIA · OPTICAL ARCHIVE</span>
+          <span class="loader-pct" id="loader-pct" aria-hidden="true">00</span>
+          <span class="loader-rule" aria-hidden="true"><i id="loader-bar"></i></span>
+          <span id="loading-text" role="status">正在凝聚馆藏</span>
+          <progress id="loading-progress" class="sr-only" max="100" value="0"></progress>
         </div>
-        <div class="film-chapters" id="film-chapters" role="group" aria-label="漫游章节跳转">
-          <button type="button" data-act-seek="0" aria-current="true">序幕</button>
-          <button type="button" data-act-seek="5.8">坍缩</button>
-          <button type="button" data-act-seek="13.5">走廊</button>
-          <button type="button" data-act-seek="22.8">重组</button>
-          <button type="button" data-act-seek="27.2">晶格</button>
+        <div class="threshold-veil" id="threshold-veil">
+          <span class="threshold-kicker">SILVER HALIDE ARCHIVE · <em id="threshold-count">0120</em> PRINTS</span>
+          <p class="threshold-title" aria-hidden="true">Memoria</p>
+          <button type="button" id="threshold-enter" class="threshold-enter">
+            <span class="threshold-line" aria-hidden="true"></span>
+            <span class="threshold-prompt">轻滚或点击进入暗房</span>
+          </button>
         </div>
-        <span id="film-time">00:00 / 00:30</span>
-        <button id="stop-film" class="icon-button" aria-label="结束漫游"><i data-lucide="x" aria-hidden="true"></i></button>
-        <input id="film-scrubber" class="film-scrubber" type="range" min="0" max="29.65" step="0.02" value="0" aria-label="拖动预览 30 秒漫游进度" />
-        <progress id="film-progress" class="sr-only" value="0" max="30"></progress>
       </div>
+
+      <div class="drop-target" id="drop-target">
+        <span class="drop-kicker">LOCAL DARKROOM</span>
+        <span class="drop-heading">放入你的照片</span>
+        <p>最多 3,000 张 · 自动读取拍摄年份并按六大色温光谱编排</p>
+      </div>
+
+      <div class="error-card" id="error-card" hidden>
+        <h2>暂时无法开启三维暗房</h2>
+        <p id="error-message"></p>
+        <div class="error-actions">
+          <button type="button" class="text-link accent-link" id="retry">重新开启</button>
+          <span class="hud-sep" aria-hidden="true">·</span>
+          <button type="button" class="text-link" id="browse-fallback">浏览接触印相</button>
+        </div>
+      </div>
+
       <div class="toast" id="toast" role="status" hidden></div>
-      <button id="restore-ui" class="button" hidden><i data-lucide="eye" aria-hidden="true"></i><span>显示界面</span><kbd>H</kbd></button>
+      <button id="restore-ui" type="button" class="restore-whisper text-link" hidden>显影字标 <em>H</em></button>
       <input type="file" id="file-input" accept="image/*,.heic,.heif" multiple hidden />
-      <dialog id="gallery-dialog" aria-labelledby="gallery-title">
-        <div class="gallery-header">
-          <div class="gallery-title-group">
-            <h2 id="gallery-title">相册</h2>
+
+      <dialog id="gallery-dialog" class="index-curtain" aria-labelledby="gallery-title">
+        <header class="curtain-masthead">
+          <div class="curtain-heading">
+            <span class="curtain-en" aria-hidden="true">Index</span>
+            <h2 id="gallery-title">馆藏底片 · 0120</h2>
+          </div>
+          <button type="button" class="dialog-close text-link curtain-close" aria-label="关闭暗房索引">
+            返回空间 <em>Esc</em>
+          </button>
+        </header>
+
+        <section class="curtain-studio" aria-label="空间形态与暗房指令">
+          <nav class="curtain-modes" aria-label="照片空间形态">
+            <button type="button" data-mode="orbit" aria-pressed="true"><i>I</i><span>星环</span></button>
+            <button type="button" data-mode="tunnel" aria-pressed="false"><i>II</i><span>隧道</span></button>
+            <button type="button" data-mode="sphere" aria-pressed="false"><i>III</i><span>星球</span></button>
+            <button type="button" data-mode="helix" aria-pressed="false"><i>IV</i><span>螺旋</span></button>
+          </nav>
+
+          <div class="curtain-actions">
+            <button type="button" id="import" class="text-link">导入照片</button>
+            <span class="hud-sep" aria-hidden="true">·</span>
+            <button type="button" id="film" class="text-link">30 秒漫游</button>
+            <span class="hud-sep" aria-hidden="true">·</span>
+            <button type="button" id="play" class="text-link" aria-label="暂停旋转">运镜：开启</button>
+            <span class="hud-sep" aria-hidden="true">·</span>
+            <button type="button" id="speed-cycle" class="text-link" aria-label="切换旋转速率">速率：适中</button>
+            <span class="hud-sep" aria-hidden="true">·</span>
+            <span class="curtain-group" role="group" aria-label="录制画幅">
+              <span class="curtain-group-label">画幅</span>
+              <button type="button" data-aspect="auto" aria-pressed="true" class="text-link">窗口</button>
+              <button type="button" data-aspect="16:9" aria-pressed="false" class="text-link">16:9</button>
+              <button type="button" data-aspect="9:16" aria-pressed="false" class="text-link">9:16</button>
+            </span>
+            <span class="hud-sep" aria-hidden="true">·</span>
+            <button type="button" id="record" class="text-link">录制音画</button>
+            <span class="hud-sep" aria-hidden="true">·</span>
+            <button type="button" id="fullscreen" class="text-link">进入全屏</button>
+            <span class="hud-sep" aria-hidden="true">·</span>
+            <button type="button" id="reset" class="text-link">重置视角</button>
+            <span class="hud-sep" aria-hidden="true">·</span>
+            <button type="button" id="demo" class="text-link">恢复馆藏</button>
+          </div>
+        </section>
+
+        <div class="curtain-subbar">
+          <div class="curtain-acts" role="group" aria-label="五幕时空直达">
+            <span class="curtain-group-label">时空幕次</span>
+            <button type="button" data-act-seek="0" aria-current="true" class="text-link">序幕</button>
+            <button type="button" data-act-seek="5.8" class="text-link">坍缩</button>
+            <button type="button" data-act-seek="13.5" class="text-link">走廊</button>
+            <button type="button" data-act-seek="22.8" class="text-link">重组</button>
+            <button type="button" data-act-seek="27.2" class="text-link">晶格</button>
+          </div>
+
+          <div class="curtain-vault">
             <label class="vault-inline-toggle" for="gallery-remember">
               <input type="checkbox" id="gallery-remember" />
-              <span>本机记住相册</span>
+              <span id="vault-status">本机记忆：默认关闭</span>
             </label>
+            <button type="button" class="text-link accent-link" id="clear-vault" hidden>清除缓存</button>
+            <a href="./archive/SOURCES.md" target="_blank" rel="noreferrer" class="text-link muted-link">摄影授权</a>
           </div>
-          <button class="dialog-close icon-button" aria-label="关闭相册"><i data-lucide="x" aria-hidden="true"></i></button>
         </div>
+
         <div id="gallery-chapters" class="gallery-chapters" role="group" aria-label="按拍摄年份筛选" hidden></div>
+
         <div id="gallery-grid" class="gallery-grid"></div>
-        <div class="gallery-pagination"><span id="gallery-range"></span><div><button id="gallery-previous" class="icon-button" aria-label="上一页照片"><i data-lucide="arrow-left" aria-hidden="true"></i></button><button id="gallery-next" class="icon-button" aria-label="下一页照片"><i data-lucide="arrow-right" aria-hidden="true"></i></button></div></div>
+
+        <footer class="gallery-pagination">
+          <span id="gallery-range"></span>
+          <div class="pagination-links">
+            <button id="gallery-previous" type="button" class="text-link" aria-label="上一页照片">上一页</button>
+            <span class="hud-sep" aria-hidden="true">·</span>
+            <button id="gallery-next" type="button" class="text-link" aria-label="下一页照片">下一页</button>
+          </div>
+        </footer>
       </dialog>
+
       <dialog id="photo-dialog" aria-label="照片放大查看">
-        <button class="dialog-close icon-button" aria-label="关闭照片"><i data-lucide="x" aria-hidden="true"></i></button>
+        <button type="button" class="dialog-close text-link curtain-close" aria-label="关闭照片">关闭 <em>Esc</em></button>
         <div id="photo-stage" class="photo-stage" aria-busy="false">
           <img id="photo-preview" alt="" hidden />
-          <div id="photo-feedback" class="photo-feedback" role="status" hidden><span class="loader-orbit" aria-hidden="true"></span><span id="photo-status">正在打开照片</span><button id="photo-retry" class="button" hidden>重新打开照片</button></div>
-        </div>
-        <div class="photo-caption" aria-live="polite" aria-atomic="true"><span id="photo-title"></span><span id="photo-number"></span></div>
-        <div class="photo-navigation"><button class="icon-button" id="previous-photo" aria-label="上一张照片"><i data-lucide="arrow-left" aria-hidden="true"></i></button><button class="icon-button" id="next-photo" aria-label="下一张照片"><i data-lucide="arrow-right" aria-hidden="true"></i></button></div>
-      </dialog>
-      <dialog id="settings-dialog" aria-labelledby="settings-title">
-        <button class="dialog-close icon-button" aria-label="关闭设置"><i data-lucide="x" aria-hidden="true"></i></button>
-        <h2 id="settings-title">视图设置</h2>
-        <label class="speed-row" for="speed"><span>旋转速度</span><input id="speed" type="range" min="0.2" max="2" value="0.45" step="0.05" aria-label="旋转速度" /></label>
-        <div class="aspect-row" role="group" aria-labelledby="export-aspect-label">
-          <span id="export-aspect-label">录制画幅</span>
-          <div class="aspect-pills" id="export-aspect">
-            <button type="button" data-aspect="auto" aria-pressed="true">窗口</button>
-            <button type="button" data-aspect="16:9" aria-pressed="false">16:9 横屏</button>
-            <button type="button" data-aspect="9:16" aria-pressed="false">9:16 竖屏</button>
+          <div id="photo-feedback" class="photo-feedback" role="status" hidden>
+            <span class="loader-orbit" aria-hidden="true"></span>
+            <span id="photo-status">正在打开照片</span>
+            <button id="photo-retry" type="button" class="text-link accent-link" hidden>重新打开照片</button>
           </div>
         </div>
-        <div class="vault-card">
-          <label class="vault-toggle" for="remember-album">
-            <div>
-              <span class="vault-title">在此设备记住导入相册</span>
-              <span class="vault-desc" id="vault-status">IndexedDB 纯本地存储 · 默认关闭保护隐私</span>
-            </div>
-            <input type="checkbox" id="remember-album" />
-          </label>
-          <button type="button" class="vault-clear-btn" id="clear-vault" hidden>清除本机缓存相册</button>
+        <div class="photo-caption" aria-live="polite" aria-atomic="true">
+          <span id="photo-title"></span>
+          <span id="photo-number"></span>
         </div>
-        <div class="settings-actions"><button id="reset"><i data-lucide="rotate-ccw" aria-hidden="true"></i>重置视角</button><button id="clean"><i data-lucide="eye-off" aria-hidden="true"></i>隐藏界面<kbd>H</kbd></button><button id="fullscreen"><i data-lucide="maximize" aria-hidden="true"></i><span>进入全屏</span></button></div>
+        <div class="photo-navigation">
+          <button type="button" class="text-link" id="previous-photo" aria-label="上一张照片">上一帧</button>
+          <span class="hud-sep" aria-hidden="true">·</span>
+          <button type="button" class="text-link" id="next-photo" aria-label="下一张照片">下一帧</button>
+        </div>
       </dialog>
-      <dialog id="help-dialog" aria-labelledby="help-title">
-        <button class="dialog-close icon-button" aria-label="关闭说明"><i data-lucide="x" aria-hidden="true"></i></button>
-        <h2 id="help-title">慢慢探索。</h2>
-        <p>触控板或滚轮可直接推进与倒退五幕时空叙事，任意时刻拖动可环视偏航。点击任意三维照片将飞入它的物理位置原位凝视，背景化为光学散景。</p>
-        <p>导入或拖入最多 3,000 张照片，系统自动读取 EXIF 拍摄年份生成章节锚点，并按光谱流向构筑星环与走廊。开启「本机记住相册」可将相册安全保存在当前设备 IndexedDB 中，绝不上传网络。</p>
-        <div class="help-shortcuts"><span><kbd>空格</kbd> 暂停</span><span><kbd>←</kbd><kbd>→</kbd> 穿梭凝视</span><span><kbd>H</kbd> 隐藏界面</span><span><kbd>Esc</kbd> 退出</span></div>
-        <button id="demo" class="button">恢复精选相册</button>
-        <div class="help-links"><a href="./editorial/SOURCES.md" target="_blank" rel="noreferrer">摄影来源</a><a href="https://www.douyin.com/video/7692616221573117321" target="_blank" rel="noreferrer">参考作品<i data-lucide="arrow-up-right" aria-hidden="true"></i></a></div>
-      </dialog>
-      <aside id="inspection-panel" hidden aria-label="动效验收"><div class="inspection-actions"><button id="sample-performance">采样 30 秒</button><button id="stop-performance">结束采样</button><button data-inspect-seek="8">镜头 8 秒</button><button data-inspect-seek="14">镜头 14 秒</button><button data-inspect-seek="25">镜头 25 秒</button></div><output id="performance-output">等待采样</output></aside>
+
+      <aside id="inspection-panel" hidden aria-label="动效验收">
+        <div class="inspection-actions">
+          <button type="button" id="sample-performance">采样 30 秒</button>
+          <button type="button" id="stop-performance">结束采样</button>
+          <button type="button" data-inspect-seek="8">镜头 8 秒</button>
+          <button type="button" data-inspect-seek="14">镜头 14 秒</button>
+          <button type="button" data-inspect-seek="25">镜头 25 秒</button>
+        </div>
+        <output id="performance-output">等待采样</output>
+      </aside>
       <noscript><div class="no-script">需要启用 JavaScript 才能打开照片空间。<a href="./editorial/coast-analogue.jpg">查看摄影</a></div></noscript>
     </main>
     <script type="module" src="/src/main.js"></script>

@@ -397,17 +397,21 @@ export class DarkroomPipeline {
           return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
         }
 
-        // 14-tap Golden-Angle Vogel Disc optical bokeh for 3D In-Situ Gaze background
+        // 22-tap Golden-Angle Vogel Disc + prefiltered halation cushion for velvety optical bokeh
         vec3 sampleOpticalBokeh(vec2 uv, float amount) {
-          vec2 radius = uSceneTexel * (16.5 * amount);
+          vec2 radius = uSceneTexel * (13.5 * amount);
+          float jitter = hash12(gl_FragCoord.xy) * 6.2831853;
           vec3 acc = texture2D(tScene, uv).rgb * 1.15;
           float total = 1.15;
-          for (int i = 1; i <= 14; i++) {
+          for (int i = 1; i <= 22; i++) {
             float fi = float(i);
-            float r = sqrt(fi / 14.5);
-            float theta = fi * 2.39996323;
+            float r = sqrt(fi / 22.5);
+            float theta = fi * 2.39996323 + jitter * 0.16;
             vec2 offset = vec2(cos(theta), sin(theta)) * r * radius;
-            vec3 tap = texture2D(tScene, clamp(uv + offset, 0.001, 0.999)).rgb;
+            vec2 sampleUv = clamp(uv + offset, 0.001, 0.999);
+            vec3 sharpTap = texture2D(tScene, sampleUv).rgb;
+            vec3 softTap = texture2D(tHalation, sampleUv).rgb;
+            vec3 tap = mix(sharpTap, max(sharpTap * 0.72, softTap * 1.12), smoothstep(0.25, 0.9, amount) * 0.42);
             float luma = dot(tap, vec3(0.2126, 0.7152, 0.0722));
             // Specular bokeh highlight emphasis (medium-format lens aperture character)
             float weight = 1.0 + smoothstep(0.22, 0.85, luma) * 1.35;
