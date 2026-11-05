@@ -33,6 +33,30 @@ function demoBaseUrl(directory = 'editorial/') {
   return new URL(directory, new URL(base, globalThis.location?.href || import.meta.url));
 }
 
+function parseArchiveTimestamp(entry) {
+  if (Number.isInteger(entry?.capturedYear) && entry.capturedYear >= 1900 && entry.capturedYear <= 2100) {
+    return {
+      capturedYear: entry.capturedYear,
+      capturedDate: entry.capturedDate || String(entry.capturedYear),
+      dateSource: 'archive',
+    };
+  }
+  const match = String(entry?.downloadUrl || '').match(/photo-(\d{12,13})-/);
+  if (!match) return null;
+  const ms = Number(match[1]);
+  if (!Number.isFinite(ms) || ms <= 0) return null;
+  const date = new Date(ms);
+  const year = date.getUTCFullYear();
+  if (year < 1990 || year > 2100) return null;
+  const mm = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(date.getUTCDate()).padStart(2, '0');
+  return {
+    capturedYear: year,
+    capturedDate: `${year}-${mm}-${dd}`,
+    dateSource: 'archive',
+  };
+}
+
 function mapDemoManifest(manifest, base, prefix, offset = 0, assignAspect = false) {
   const aspectCycle = [1.43, 0.75, 1.0, 1.5, 0.72, 1.33, 0.8, 1.43];
   return manifest.map((entry, index) => {
@@ -60,6 +84,12 @@ function mapDemoManifest(manifest, base, prefix, offset = 0, assignAspect = fals
       license: entry.license,
       licenseUrl: entry.licenseUrl,
     };
+    const stamp = parseArchiveTimestamp(entry);
+    if (stamp) {
+      photo.capturedYear = stamp.capturedYear;
+      photo.capturedDate = stamp.capturedDate;
+      photo.dateSource = stamp.dateSource;
+    }
     if (assignAspect) photo.displayAspect = aspectCycle[index % aspectCycle.length];
     return photo;
   });
@@ -152,12 +182,83 @@ export function releasePhotos(photos) {
   }
 }
 
+/** Extract underlying File/Blob objects for opt-in IndexedDB local persistence. */
+export function extractLocalPhotoFiles(photos, indices = null) {
+  const targetList = Array.isArray(indices)
+    ? indices.map(idx => photos?.[idx]).filter(Boolean)
+    : (photos || []);
+  return targetList.map(photo => localFiles.get(photo)).filter(Boolean);
+}
+
+/** Group valid photos into descending capture-year chapters for timeline/gallery navigation. */
+export function buildYearChapters(photos, validIndices) {
+  const indices = Array.isArray(validIndices)
+    ? validIndices
+    : Array.from({ length: photos?.length || 0 }, (_, i) => i);
+  const byYear = new Map();
+  const undated = [];
+  for (const photoIndex of indices) {
+    const photo = photos?.[photoIndex];
+    if (!photo) continue;
+    const year = photo.capturedYear;
+    if (Number.isInteger(year) && year >= 1900 && year <= 2100) {
+      if (!byYear.has(year)) byYear.set(year, []);
+      byYear.get(year).push(photoIndex);
+    } else {
+      undated.push(photoIndex);
+    }
+  }
+  const chapters = [...byYear.entries()]
+    .sort((a, b) => b[0] - a[0])
+    .map(([year, list]) => ({
+      key: String(year),
+      year,
+      label: `${year}`,
+      count: list.length,
+      firstPhotoIndex: list[0],
+      photoIndices: list,
+    }));
+  if (undated.length && chapters.length) {
+    chapters.push({
+      key: 'undated',
+      year: null,
+      label: '未标年份',
+      count: undated.length,
+      firstPhotoIndex: undated[0],
+      photoIndices: undated,
+    });
+  }
+  return chapters;
+}
+
 function ascii(bytes, offset, length) {
   return String.fromCharCode(...bytes.subarray(offset, offset + length));
 }
 
-function exifOrientation(view, offset, length) {
-  // APP1 body: Exif\0\0, followed by a TIFF header and IFD0.
+function parseExifDateString(raw) {
+  const m = String(raw || '').replace(/\0+$/, '').trim().match(/^(\d{4})[:\-](\d{2})[:\-](\d{2})/);
+  if (!m) return null;
+  const year = Number(m[1]);
+  const month = Number(m[2]);
+  const day = Number(m[3]);
+  if (year < 1900 || year > 2100 || month < 1 || month > 12 || day < 1 || day > 31) return null;
+  return {
+    capturedYear: year,
+    capturedDate: `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`,
+  };
+}
+
+function readExifAsciiTag(view, bytes, tiff, end, entry, littleEndian) {
+  if (view.getUint16(entry + 2, littleEndian) !== 2) return null;
+  const count = view.getUint32(entry + 4, littleEndian);
+  if (count < 10 || count > 64) return null;
+  const valueOffset = count <= 4 ? entry + 8 : tiff + view.getUint32(entry + 8, littleEndian);
+  if (valueOffset < tiff || valueOffset + count > end) return null;
+  return ascii(bytes, valueOffset, count);
+}
+
+function parseExifSegment(view, bytes, offset, length) {
+  // APP1 body: Exif\0\0, followed by a TIFF header, IFD0, and optional ExifIFD (0x8769).
   const end = Math.min(view.byteLength, offset + length);
   if (offset + 14 > end || view.getUint32(offset) !== 0x45786966 || view.getUint16(offset + 4) !== 0) return null;
   const tiff = offset + 6;
@@ -168,17 +269,50 @@ function exifOrientation(view, offset, length) {
   const ifd = tiff + view.getUint32(tiff + 4, littleEndian);
   if (ifd + 2 > end || ifd < tiff) return null;
   const count = view.getUint16(ifd, littleEndian);
+  let orientation = null;
+  let ifd0Date = null;
+  let exifIfdOffset = null;
+
   for (let index = 0; index < count; index += 1) {
     const entry = ifd + 2 + index * 12;
     if (entry + 12 > end) break;
-    if (view.getUint16(entry, littleEndian) === 0x0112
+    const tag = view.getUint16(entry, littleEndian);
+    if (tag === 0x0112
       && view.getUint16(entry + 2, littleEndian) === 3
       && view.getUint32(entry + 4, littleEndian) === 1) {
-      const orientation = view.getUint16(entry + 8, littleEndian);
-      return orientation >= 1 && orientation <= 8 ? orientation : null;
+      const val = view.getUint16(entry + 8, littleEndian);
+      if (val >= 1 && val <= 8) orientation = val;
+    } else if (tag === 0x0132) {
+      ifd0Date = parseExifDateString(readExifAsciiTag(view, bytes, tiff, end, entry, littleEndian)) || ifd0Date;
+    } else if (tag === 0x8769
+      && view.getUint16(entry + 2, littleEndian) === 4
+      && view.getUint32(entry + 4, littleEndian) === 1) {
+      exifIfdOffset = tiff + view.getUint32(entry + 8, littleEndian);
     }
   }
-  return null;
+
+  let originalDate = null;
+  let digitizedDate = null;
+  if (exifIfdOffset !== null && exifIfdOffset >= tiff && exifIfdOffset + 2 <= end) {
+    const subCount = view.getUint16(exifIfdOffset, littleEndian);
+    for (let index = 0; index < subCount; index += 1) {
+      const entry = exifIfdOffset + 2 + index * 12;
+      if (entry + 12 > end) break;
+      const tag = view.getUint16(entry, littleEndian);
+      if (tag === 0x9003) {
+        originalDate = parseExifDateString(readExifAsciiTag(view, bytes, tiff, end, entry, littleEndian)) || originalDate;
+      } else if (tag === 0x9004) {
+        digitizedDate = parseExifDateString(readExifAsciiTag(view, bytes, tiff, end, entry, littleEndian)) || digitizedDate;
+      }
+    }
+  }
+
+  const chosenDate = originalDate || digitizedDate || ifd0Date;
+  return {
+    orientation,
+    capturedYear: chosenDate?.capturedYear ?? null,
+    capturedDate: chosenDate?.capturedDate ?? null,
+  };
 }
 
 async function readImageDimensions(blob) {
@@ -188,7 +322,27 @@ async function readImageDimensions(blob) {
   if (bytes.length < 10) return null;
 
   if (bytes.length >= 24 && view.getUint32(0) === 0x89504e47 && ascii(bytes, 12, 4) === 'IHDR') {
-    return { width: view.getUint32(16), height: view.getUint32(20) };
+    const dims = { width: view.getUint32(16), height: view.getUint32(20) };
+    let pngOffset = 8;
+    while (pngOffset + 12 <= bytes.length) {
+      const chunkLen = view.getUint32(pngOffset);
+      const chunkType = ascii(bytes, pngOffset + 4, 4);
+      const dataStart = pngOffset + 8;
+      if (chunkType === 'tIME' && chunkLen >= 7 && dataStart + 7 <= bytes.length) {
+        const year = view.getUint16(dataStart);
+        const month = bytes[dataStart + 2];
+        const day = bytes[dataStart + 3];
+        if (year >= 1900 && year <= 2100 && month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+          dims.capturedYear = year;
+          dims.capturedDate = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+          dims.dateSource = 'exif';
+        }
+        break;
+      }
+      if (chunkType === 'IDAT' || chunkType === 'IEND' || chunkLen > bytes.length) break;
+      pngOffset = dataStart + chunkLen + 4;
+    }
+    return dims;
   }
   if (/^GIF8[79]a$/.test(ascii(bytes, 0, 6))) {
     return { width: view.getUint16(6, true), height: view.getUint16(8, true) };
@@ -205,6 +359,8 @@ async function readImageDimensions(blob) {
     let offset = 2;
     let dimensions;
     let orientation = 1;
+    let capturedYear = null;
+    let capturedDate = null;
     while (offset + 4 <= bytes.length) {
       if (bytes[offset] !== 0xff) break;
       while (bytes[offset] === 0xff) offset += 1;
@@ -215,7 +371,14 @@ async function readImageDimensions(blob) {
       const length = view.getUint16(offset);
       if (length < 2 || offset + length > bytes.length) break;
       // APP1 also carries XMP; a non-EXIF segment must not reset prior EXIF.
-      if (marker === 0xe1) orientation = exifOrientation(view, offset + 2, length - 2) ?? orientation;
+      if (marker === 0xe1) {
+        const exifMeta = parseExifSegment(view, bytes, offset + 2, length - 2);
+        if (exifMeta) {
+          orientation = exifMeta.orientation ?? orientation;
+          capturedYear = exifMeta.capturedYear ?? capturedYear;
+          capturedDate = exifMeta.capturedDate ?? capturedDate;
+        }
+      }
       if ([0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf].includes(marker)
         && length >= 7) {
         dimensions = { width: view.getUint16(offset + 5), height: view.getUint16(offset + 3) };
@@ -224,6 +387,11 @@ async function readImageDimensions(blob) {
     }
     if (dimensions && orientation >= 5 && orientation <= 8) {
       [dimensions.width, dimensions.height] = [dimensions.height, dimensions.width];
+    }
+    if (dimensions && capturedYear) {
+      dimensions.capturedYear = capturedYear;
+      dimensions.capturedDate = capturedDate;
+      dimensions.dateSource = 'exif';
     }
     return dimensions || null;
   }
@@ -386,6 +554,24 @@ async function decodeThumbnail(photo, budget) {
   if (photo.source !== 'demo' || !photo.width || !photo.height) {
     photo.width = width;
     photo.height = height;
+  }
+  if (dimensions.capturedYear) {
+    photo.capturedYear = dimensions.capturedYear;
+    photo.capturedDate = dimensions.capturedDate;
+    photo.dateSource = dimensions.dateSource || 'exif';
+  } else if (!photo.capturedYear && photo.source === 'local') {
+    const fileRef = localFiles.get(photo);
+    if (fileRef && Number.isFinite(fileRef.lastModified) && fileRef.lastModified > 0) {
+      const d = new Date(fileRef.lastModified);
+      const y = d.getFullYear();
+      if (y >= 1990 && y <= 2100) {
+        const mm = String(d.getMonth() + 1).padStart(2, '0');
+        const dd = String(d.getDate()).padStart(2, '0');
+        photo.capturedYear = y;
+        photo.capturedDate = `${y}-${mm}-${dd}`;
+        photo.dateSource = 'mtime';
+      }
+    }
   }
   return bitmap;
 }

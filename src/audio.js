@@ -1,13 +1,19 @@
-// Procedural Web Audio spatial soundscape with zero external audio assets.
-// Synthesizes a warm darkroom drone, Doppler corridor wind, crystalline
-// stellation harmonics, and pentatonic hover/focus micro-foley, while exposing
-// a stereo MediaStreamTrack so video exports carry the synchronized soundtrack.
+// Hybrid spatial soundscape: zero-KB initial boot via procedural Web Audio synthesis
+// (darkroom sub-drone, Doppler corridor wind, crystalline stellation harmonics, and
+// pentatonic hover micro-foley) blended with an on-demand lazy-loaded stereo felt-piano
+// & bowed-cello chamber stem once audio is enabled, routed to both speakers and video export.
 
 const PENTATONIC_HZ = [293.66, 329.63, 369.99, 440.0, 493.88, 587.33, 659.25, 739.99, 880.0];
 
 export class SpatialSoundscape {
-  constructor({ AudioContextClass = globalThis.AudioContext || globalThis.webkitAudioContext } = {}) {
+  constructor({
+    AudioContextClass = globalThis.AudioContext || globalThis.webkitAudioContext,
+    stemUrl = null,
+    fetchImpl = globalThis.fetch,
+  } = {}) {
     this._AudioContext = AudioContextClass;
+    this._stemUrl = stemUrl;
+    this._fetch = fetchImpl;
     this._ctx = null;
     this._master = null;
     this._exportMaster = null;
@@ -18,6 +24,11 @@ export class SpatialSoundscape {
     this._windFilter = null;
     this._windPanner = null;
     this._crystalGain = null;
+    this._stemSource = null;
+    this._stemGain = null;
+    this._stemFilter = null;
+    this._stemLoading = false;
+    this._stemPromise = null;
     this._oscillators = [];
     this._muted = false;
     this._disposed = false;
@@ -31,6 +42,10 @@ export class SpatialSoundscape {
 
   get active() {
     return Boolean(this._ctx && this._ctx.state === 'running' && !this._muted);
+  }
+
+  get stemLoaded() {
+    return Boolean(this._stemSource);
   }
 
   isSupported() {
@@ -49,7 +64,70 @@ export class SpatialSoundscape {
     if (this._ctx?.state === 'suspended') {
       this._ctx.resume?.().catch(() => {});
     }
+    if (!this._muted) {
+      this._ensureAcousticStem();
+    }
     return Boolean(this._ctx);
+  }
+
+  _ensureAcousticStem() {
+    if (
+      this._disposed ||
+      this._muted ||
+      !this._stemUrl ||
+      this._stemSource ||
+      this._stemLoading ||
+      !this._ctx ||
+      typeof this._fetch !== 'function' ||
+      typeof this._ctx.decodeAudioData !== 'function' ||
+      typeof this._ctx.createBufferSource !== 'function'
+    ) {
+      return this._stemPromise;
+    }
+    this._stemLoading = true;
+    const ctx = this._ctx;
+    const fetchFn = this._fetch;
+    const stemUrl = this._stemUrl;
+    this._stemPromise = Promise.resolve()
+      .then(() => fetchFn(stemUrl))
+      .then(res => {
+        if (!res?.ok) throw new Error('Acoustic stem HTTP ' + (res?.status || 0));
+        return res.arrayBuffer();
+      })
+      .then(buf => ctx.decodeAudioData(buf))
+      .then(audioBuffer => {
+        if (this._disposed || this._ctx !== ctx) return false;
+        const source = ctx.createBufferSource();
+        source.buffer = audioBuffer;
+        source.loop = true;
+
+        const filter = ctx.createBiquadFilter();
+        filter.type = 'lowpass';
+        filter.frequency.value = 1850;
+        filter.Q.value = 0.55;
+
+        const gain = ctx.createGain();
+        const now = ctx.currentTime || 0;
+        gain.gain.value = 0.0001;
+        gain.gain.setValueAtTime?.(0.0001, now);
+        gain.gain.setTargetAtTime?.(0.46, now, 0.75);
+
+        source.connect(filter);
+        filter.connect(gain);
+        gain.connect(this._bus);
+        source.start(0);
+
+        this._stemSource = source;
+        this._stemFilter = filter;
+        this._stemGain = gain;
+        this._oscillators.push(source);
+        return true;
+      })
+      .catch(() => false)
+      .finally(() => {
+        this._stemLoading = false;
+      });
+    return this._stemPromise;
   }
 
   _buildGraph() {
@@ -185,6 +263,9 @@ export class SpatialSoundscape {
     if (!this._muted && this._ctx.state === 'suspended') {
       this._ctx.resume?.().catch(() => {});
     }
+    if (!this._muted) {
+      this._ensureAcousticStem();
+    }
     return this._muted;
   }
 
@@ -215,10 +296,19 @@ export class SpatialSoundscape {
     const now = this._ctx.currentTime || 0;
     const rush = Math.min(1, tunnelFactor * 0.65 + (twist / 4.35) * 0.55 + morphImpulse * 0.7);
 
+    const hasStem = Boolean(this._stemSource);
     const droneCutoff = focused ? 190 : 250 + rush * 360 + breath * 280;
-    const droneLevel = focused ? 0.032 : 0.046 + morphImpulse * 0.025;
+    const baseDrone = hasStem ? 0.022 : 0.046;
+    const droneLevel = focused ? baseDrone * 0.72 : baseDrone + morphImpulse * 0.022;
     this._droneFilter?.frequency.setTargetAtTime?.(droneCutoff, now, 0.08);
     this._droneGain?.gain.setTargetAtTime?.(droneLevel, now, 0.08);
+
+    if (this._stemFilter && this._stemGain) {
+      const stemCutoff = focused ? 1150 : 1750 + rush * 1250 + breath * 950;
+      const stemLevel = focused ? 0.34 : 0.46 + breath * 0.08;
+      this._stemFilter.frequency.setTargetAtTime?.(stemCutoff, now, 0.12);
+      this._stemGain.gain.setTargetAtTime?.(stemLevel, now, 0.14);
+    }
 
     if (this._windFilter && this._windGain) {
       this._windFilter.frequency.setTargetAtTime?.(160 + rush * 680, now, 0.06);
@@ -285,6 +375,9 @@ export class SpatialSoundscape {
       try { node.disconnect(); } catch {}
     }
     this._oscillators = [];
+    this._stemSource = null;
+    this._stemFilter = null;
+    this._stemGain = null;
     try { this._ctx?.close?.(); } catch {}
     this._ctx = null;
   }

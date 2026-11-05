@@ -1,8 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import * as THREE from 'three';
 import { rgbToSpectralKey, extractPhotoMood, createAtmosphereField, createDustField } from './post.js';
 import { SpatialSoundscape } from './audio.js';
+import { AlbumVault } from './storage.js';
+import {
+  loadLocalPhotos,
+  buildPhotoAtlases,
+  releasePhotos,
+  extractLocalPhotoFiles,
+  buildYearChapters,
+} from './photos.js';
 import { CanvasRecorder, CINEMA_VIDEO_BITS_PER_SECOND } from './recording.js';
 import { PhotoUniverse, chromaticPhotoPool } from './scene.js';
 
@@ -72,6 +81,13 @@ class FakeAudioContext {
   }
   async resume() { this.state = 'running'; }
   async close() { this.closed = true; this.state = 'closed'; }
+  async decodeAudioData(arrayBuffer) {
+    return {
+      duration: 24,
+      length: arrayBuffer.byteLength,
+      sampleRate: this.sampleRate,
+    };
+  }
 }
 
 function makeSceneHarness(width = 1280, height = 720) {
@@ -390,5 +406,353 @@ test('PhotoUniverse supports 2.25s stardust genesis, 3D in-situ camera gaze, liv
   O.clearExportResolution();
   assert.ok(Math.abs(O.camera.aspect - 1440 / 900) < 1e-6);
 
+  O.clearPhotos();
+});
+
+function createFakeIndexedDB() {
+  const dbs = new Map();
+  return {
+    open(name) {
+      const req = { result: null, error: null, onupgradeneeded: null, onsuccess: null, onerror: null };
+      queueMicrotask(() => {
+        let dbEntry = dbs.get(name);
+        const isNew = !dbEntry;
+        if (!dbEntry) {
+          const stores = new Map();
+          dbEntry = {
+            stores,
+            closed: false,
+            objectStoreNames: { contains: (s) => stores.has(s) },
+            createObjectStore(s, opts = {}) {
+              const map = new Map();
+              map.keyPath = opts.keyPath || 'seq';
+              stores.set(s, map);
+              return {};
+            },
+            transaction(s) {
+              const map = stores.get(s);
+              const tx = { oncomplete: null, onerror: null, onabort: null, error: null };
+              const storeApi = {
+                clear() { map?.clear(); },
+                put(rec) { map?.set(rec[map.keyPath], rec); },
+                getAll() {
+                  const r = { result: null, onsuccess: null, onerror: null };
+                  queueMicrotask(() => {
+                    r.result = map ? [...map.values()] : [];
+                    r.onsuccess?.();
+                  });
+                  return r;
+                },
+              };
+              queueMicrotask(() => queueMicrotask(() => tx.oncomplete?.()));
+              tx.objectStore = () => storeApi;
+              return tx;
+            },
+            close() { this.closed = true; },
+          };
+          dbs.set(name, dbEntry);
+        }
+        req.result = dbEntry;
+        if (isNew) req.onupgradeneeded?.();
+        req.onsuccess?.();
+      });
+      return req;
+    },
+  };
+}
+
+test('AlbumVault defaults to disabled privacy mode, round-trips local Files when enabled, and purges IndexedDB on disable', async () => {
+  const mem = new Map();
+  const storage = {
+    getItem: (k) => (mem.has(k) ? mem.get(k) : null),
+    setItem: (k, v) => mem.set(k, String(v)),
+    removeItem: (k) => mem.delete(k),
+  };
+  const indexedDBImpl = createFakeIndexedDB();
+  const vault = new AlbumVault({ indexedDBImpl, storage });
+
+  assert.equal(vault.isSupported(), true);
+  assert.equal(vault.enabled, false, 'local persistence must default to OFF');
+
+  const f1 = new File([new Uint8Array([1, 2, 3, 4])], 'kyoto-2024.jpg', { type: 'image/jpeg', lastModified: 1715000000000 });
+  const f2 = new File([new Uint8Array([5, 6, 7, 8, 9, 10])], 'tokyo-2022.jpg', { type: 'image/jpeg', lastModified: 1652000000000 });
+
+  assert.deepEqual(await vault.saveFiles([f1, f2]), { saved: 0, totalBytes: 0 }, 'disabled vault never writes files');
+  assert.deepEqual(await vault.loadFiles(), []);
+
+  assert.equal(await vault.setEnabled(true), true);
+  assert.equal(vault.enabled, true);
+  const saved = await vault.saveFiles([f1, f2]);
+  assert.deepEqual(saved, { saved: 2, totalBytes: 10 });
+  assert.deepEqual(await vault.getStats(), { count: 2, totalBytes: 10 });
+
+  const restored = await vault.loadFiles();
+  assert.equal(restored.length, 2);
+  assert.deepEqual(restored.map(f => [f.name, f.type, f.size, f.lastModified]), [
+    ['kyoto-2024.jpg', 'image/jpeg', 4, 1715000000000],
+    ['tokyo-2022.jpg', 'image/jpeg', 6, 1652000000000],
+  ]);
+
+  assert.equal(await vault.setEnabled(false), false);
+  assert.equal(vault.enabled, false);
+  assert.deepEqual(await vault.getStats(), { count: 0, totalBytes: 0 }, 'disabling vault auto-purges IndexedDB');
+  vault.dispose();
+});
+
+function buildExifDateApp1(dateStr, orientation = 1, littleEndian = true) {
+  // TIFF header (8) + IFD0 count(2) + 2 entries(24) + nextIFD(4) = 38 -> align 40
+  // ExifIFD at 40: count(2) + 1 entry(12) + nextIFD(4) = 18 -> offset 58
+  // Date string (20 bytes incl null) at TIFF offset 58 -> total TIFF 78 bytes, APP1 body = 6 + 78 = 84 bytes
+  const tiffLen = 78;
+  const body = Buffer.alloc(6 + tiffLen);
+  body.write('Exif\0\0', 0, 'binary');
+  const tiff = 6;
+  body.write(littleEndian ? 'II' : 'MM', tiff, 'ascii');
+  const u16 = (off, v) => (littleEndian ? body.writeUInt16LE(v, tiff + off) : body.writeUInt16BE(v, tiff + off));
+  const u32 = (off, v) => (littleEndian ? body.writeUInt32LE(v, tiff + off) : body.writeUInt32BE(v, tiff + off));
+  u16(2, 42);
+  u32(4, 8);
+  // IFD0 at 8: 2 entries (Orientation 0x0112, ExifIFD 0x8769)
+  u16(8, 2);
+  u16(10, 0x0112); u16(12, 3); u32(14, 1); u16(18, orientation);
+  u16(22, 0x8769); u16(24, 4); u32(26, 1); u32(30, 40);
+  u32(34, 0);
+  // ExifIFD at 40: 1 entry (DateTimeOriginal 0x9003, ASCII count=20 at offset 58)
+  u16(40, 1);
+  u16(42, 0x9003); u16(44, 2); u32(46, 20); u32(50, 58);
+  u32(54, 0);
+  body.write(dateStr.padEnd(19, ' ') + '\0', tiff + 58, 'ascii');
+
+  const prefix = Buffer.alloc(4);
+  prefix[0] = 0xff;
+  prefix[1] = 0xe1;
+  prefix.writeUInt16BE(body.length + 2, 2);
+  return Buffer.concat([prefix, body]);
+}
+
+function addPngTimeChunk(pngBuf, year, month, day) {
+  // Insert 7-byte tIME chunk right after 8-byte PNG signature + 25-byte IHDR chunk (offset 33)
+  const data = Buffer.alloc(7);
+  data.writeUInt16BE(year, 0);
+  data[2] = month;
+  data[3] = day;
+  data[4] = 12;
+  data[5] = 0;
+  data[6] = 0;
+  const chunk = Buffer.alloc(12 + 7);
+  chunk.writeUInt32BE(7, 0);
+  chunk.write('tIME', 4, 'ascii');
+  data.copy(chunk, 8);
+  chunk.writeUInt32BE(0, 15);
+  return Buffer.concat([pngBuf.subarray(0, 33), chunk, pngBuf.subarray(33)]);
+}
+
+test('EXIF DateTimeOriginal (II/MM), PNG tIME, and mtime fallback populate descending Year Chapters', async () => {
+  const sampleJpeg = await readFile(new URL('../public/photos/photo-01.jpg', import.meta.url));
+  // Strip existing APP1 segments
+  const strippedChunks = [sampleJpeg.subarray(0, 2)];
+  let off = 2;
+  while (off + 4 <= sampleJpeg.length && sampleJpeg[off] === 0xff && sampleJpeg[off + 1] !== 0xda) {
+    const end = off + 2 + sampleJpeg.readUInt16BE(off + 2);
+    if (sampleJpeg[off + 1] !== 0xe1) strippedChunks.push(sampleJpeg.subarray(off, end));
+    off = end;
+  }
+  strippedChunks.push(sampleJpeg.subarray(off));
+  const cleanJpeg = Buffer.concat(strippedChunks);
+
+  const xmpPayload = Buffer.from('http://ns.adobe.com/xap/1.0/\0<x:xmpmeta/>');
+  const xmpSeg = Buffer.alloc(4 + xmpPayload.length);
+  xmpSeg[0] = 0xff; xmpSeg[1] = 0xe1; xmpSeg.writeUInt16BE(xmpPayload.length + 2, 2);
+  xmpPayload.copy(xmpSeg, 4);
+
+  const jpeg2024LE = Buffer.concat([cleanJpeg.subarray(0, 2), buildExifDateApp1('2024:09:18 17:42:10', 1, true), xmpSeg, cleanJpeg.subarray(2)]);
+  const jpeg2021BE = Buffer.concat([cleanJpeg.subarray(0, 2), buildExifDateApp1('2021:04:03 08:15:00', 6, false), xmpSeg, cleanJpeg.subarray(2)]);
+  const png1x1 = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aM1UAAAAASUVORK5CYII=', 'base64');
+  const png2023 = addPngTimeChunk(png1x1, 2023, 11, 5);
+
+  const prevDoc = globalThis.document;
+  const prevBitmap = globalThis.createImageBitmap;
+  let loadedPhotos = [];
+  try {
+    globalThis.document = {
+      createElement: () => ({
+        width: 0,
+        height: 0,
+        getContext: () => ({
+          fillRect() {},
+          drawImage() {},
+          getImageData: () => ({ data: new Uint8ClampedArray([180, 140, 90, 255]) }),
+        }),
+      }),
+    };
+    globalThis.createImageBitmap = async (_blob, opts) => ({
+      width: opts.resizeWidth,
+      height: opts.resizeHeight,
+      close() {},
+    });
+
+    const f1 = new File([jpeg2024LE], 'autumn-2024.jpg', { type: 'image/jpeg', lastModified: Date.UTC(2026, 0, 1) });
+    const f2 = new File([jpeg2021BE], 'spring-2021.jpg', { type: 'image/jpeg', lastModified: Date.UTC(2026, 0, 1) });
+    const f3 = new File([png2023], 'still-2023.png', { type: 'image/png', lastModified: Date.UTC(2026, 0, 1) });
+    const f4 = new File([cleanJpeg], 'mtime-2019.jpg', { type: 'image/jpeg', lastModified: Date.UTC(2019, 6, 15) });
+
+    const { photos } = await loadLocalPhotos([f1, f2, f3, f4]);
+    loadedPhotos = photos;
+    assert.equal(extractLocalPhotoFiles(photos).length, 4);
+    assert.deepEqual(extractLocalPhotoFiles(photos, [2, 0]).map(f => f.name), ['still-2023.png', 'autumn-2024.jpg']);
+
+    await buildPhotoAtlases(photos);
+    assert.deepEqual(
+      photos.map(p => [p.capturedYear, p.capturedDate, p.dateSource, p.width, p.height]),
+      [
+        [2024, '2024-09-18', 'exif', 400, 280],
+        [2021, '2021-04-03', 'exif', 280, 400],
+        [2023, '2023-11-05', 'exif', 1, 1],
+        [2019, '2019-07-15', 'mtime', 400, 280],
+      ]
+    );
+
+    photos.push({ id: 'undated-demo', name: 'Undated', width: 400, height: 300 });
+    const chapters = buildYearChapters(photos);
+    assert.deepEqual(
+      chapters.map(c => [c.key, c.label, c.count, c.firstPhotoIndex]),
+      [
+        ['2024', '2024', 1, 0],
+        ['2023', '2023', 1, 2],
+        ['2021', '2021', 1, 1],
+        ['2019', '2019', 1, 3],
+        ['undated', '未标年份', 1, 4],
+      ]
+    );
+  } finally {
+    releasePhotos(loadedPhotos);
+    if (prevDoc === undefined) delete globalThis.document;
+    else globalThis.document = prevDoc;
+    if (prevBitmap === undefined) delete globalThis.createImageBitmap;
+    else globalThis.createImageBitmap = prevBitmap;
+  }
+});
+
+test('SpatialSoundscape lazy-loads acoustic chamber stem only when unmuted and started', async () => {
+  let fetchCalls = 0;
+  const fetchImpl = async function boundWindowFetchGuard(url) {
+    assert.equal(this, undefined, 'window.fetch must be invoked unbound to prevent Illegal invocation in browsers');
+    fetchCalls++;
+    assert.equal(url, '/audio/felt-chamber-stem.mp3');
+    return {
+      ok: true,
+      status: 200,
+      arrayBuffer: async () => new ArrayBuffer(1024),
+    };
+  };
+
+  const sound = new SpatialSoundscape({
+    AudioContextClass: FakeAudioContext,
+    stemUrl: '/audio/felt-chamber-stem.mp3',
+    fetchImpl,
+  });
+
+  // Zero network fetches before user starts audio or while muted
+  assert.equal(fetchCalls, 0);
+  sound.setMuted(true);
+  sound.ensureStarted();
+  assert.equal(fetchCalls, 0, 'starting while muted must not fetch the stem');
+  assert.equal(sound.stemLoaded, false);
+
+  // Unmuting triggers lazy fetch + decode exactly once
+  sound.setMuted(false);
+  await sound._stemPromise;
+  assert.equal(fetchCalls, 1);
+  assert.equal(sound.stemLoaded, true);
+  assert.equal(sound._stemSource.loop, true);
+  assert.equal(sound._stemSource.started, true);
+
+  sound.ensureStarted();
+  assert.equal(fetchCalls, 1, 'subsequent ensureStarted calls reuse decoded stem');
+
+  sound.update({ tunnelFactor: 1, twist: 3.8, breath: 0.9, morphImpulse: 0.4, focused: false, pan: 0.25 });
+  assert.ok(sound._stemFilter.frequency.value > 2800, 'tunnel & breath open lowpass filter on chamber stem');
+  assert.ok(sound._droneGain.gain.value < 0.04, 'synthetic sub-drone attenuates gracefully behind real stem');
+
+  sound.update({ focused: true });
+  assert.equal(sound._stemFilter.frequency.value, 1150, '3D photo gaze warms stem into intimate darkroom lowpass');
+
+  sound.dispose();
+  assert.equal(sound.stemLoaded, false);
+});
+
+test('PhotoUniverse scroll-driven 5-act scrollytelling traverses forward/backward reversibly with drag yaw/pitch and mid-tornado gaze', () => {
+  const O = makeSceneHarness(1440, 900);
+  const photos = Array.from({ length: 24 }, (_, i) => ({
+    index: i,
+    spectralKey: (i / 24) * 0.9,
+    moodRgb: [0.7, 0.5, 0.35],
+    width: 1200,
+    height: 800,
+  }));
+  const atlases = [{
+    canvas: { width: 2048, height: 2048 },
+    photoIndices: Array.from({ length: 24 }, (_, i) => i),
+  }];
+  O.setPhotos(photos, atlases, 3000, { genesis: false });
+  O.enableScrollTheatre(true);
+  assert.equal(O.controls.enableZoom, false, 'wheel zoom yields to 5-act timeline scroll');
+
+  const initialCard0 = O.instances[0].position.clone();
+  let latestTimeline = -1;
+  O.callbacks.onFilmProgress = (sec) => { latestTimeline = sec; };
+
+  // 1) Scroll forward into Act I Square-Portal Tornado Implosion (6.48s)
+  O.scrollByTimeline(6.48);
+  let clock = 50;
+  for (; clock <= 1500; clock += 50) O.animate(clock);
+  assert.equal(O.scrollTimeline.region, 'implosion');
+  assert.ok(Math.abs(O.scrollTimeline.currentTime - 6.48) < 1e-3);
+  assert.equal(O.scrollTimeline.resting, true);
+  assert.equal(O.instanceDirty, false, 'resting mid-tornado stops touching instanceMatrix');
+  const tornadoCard0 = O.instances[0].position.clone();
+  assert.ok(tornadoCard0.distanceTo(initialCard0) > 2.0, 'cards swirl mid-tornado at 6.48s');
+
+  // Clicking a card mid-tornado freezes the tornado sculpture and flies into 3D Gaze
+  assert.equal(O.focusPhoto(3, 3), true);
+  assert.ok(O.instances[0].position.distanceTo(tornadoCard0) < 1e-4, 'mid-tornado focus preserves frozen vortex geometry');
+  assert.equal(O.closeFocus(true), true);
+
+  // 2) Scroll into Act II Spiral Corridor (14.0s) and drag pointer to pan look direction
+  O.setScrollTimeline(14.0);
+  for (; clock <= 3000; clock += 50) O.animate(clock);
+  assert.equal(O.scrollTimeline.region, 'tunnel-cruise');
+  assert.equal(O.mode, 'tunnel');
+  assert.ok(O.tunnelTwist > 4.0);
+  const centerTarget = O.controls.target.clone();
+
+  O.beginPointer({ pointerId: 1, clientX: 600, clientY: 450, button: 0, pointerType: 'mouse' });
+  O.movePointer({ pointerId: 1, clientX: 720, clientY: 390 });
+  O.endPointer({ pointerId: 1, clientX: 720, clientY: 390 });
+  for (; clock <= 3800; clock += 50) O.animate(clock);
+  assert.ok(O.scrollTimeline.lookYaw > 0.3, 'dragging right yaws view along scroll timeline');
+  assert.ok(O.scrollTimeline.lookPitch < -0.1, 'dragging up pitches view along scroll timeline');
+  assert.ok(O.controls.target.distanceTo(centerTarget) > 0.5, 'tunnel camera pans look target smoothly');
+
+  // 3) Scroll into Act III Crystalline Stellation Breath (27.28s)
+  O.setScrollTimeline(27.28, { immediate: true });
+  assert.equal(O.scrollTimeline.region, 'orbit-finale');
+  assert.ok(O.stellationBreath > 0.95);
+  assert.ok(Math.abs(latestTimeline - 27.28) < 1e-3);
+
+  // 4) Rewind backward through tornado (6.48s) all the way back to 0.0s seamlessly
+  O.scrollTimeline.targetYaw = 0;
+  O.scrollTimeline.targetPitch = 0;
+  O.scrollTimeline.lookYaw = 0;
+  O.scrollTimeline.lookPitch = 0;
+  O.setScrollTimeline(6.48, { immediate: true });
+  assert.ok(O.instances[0].position.distanceTo(tornadoCard0) < 1e-3, '6.48s pose is 100% bijective regardless of scroll direction');
+
+  O.setScrollTimeline(0, { immediate: true });
+  assert.equal(O.scrollTimeline.region, 'orbit-intro');
+  assert.ok(O.instances[0].position.distanceTo(initialCard0) < 1e-4, 'rewinding to 0s restores exact opening polyhedron');
+
+  O.exitScrollTimeline(true);
+  assert.equal(O.scrollTimeline, null);
   O.clearPhotos();
 });

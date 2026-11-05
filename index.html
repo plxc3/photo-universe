@@ -24,7 +24,7 @@
   </head>
   <body>
     <main id="app">
-      <div id="scene" aria-label="三维照片空间。拖动旋转，滚轮或双指缩放，点击照片飞入原位凝视。"></div>
+      <div id="scene" aria-label="三维照片空间。滚动推进五幕时空叙事，拖动环视偏航，点击照片飞入原位凝视。"></div>
       <div id="cursor-reticle" class="cursor-reticle" aria-hidden="true">
         <span class="reticle-frame"></span>
         <span class="reticle-tag"><i class="reticle-dot"></i><span id="reticle-number" class="reticle-number"></span><span id="reticle-label" class="reticle-label"></span></span>
@@ -87,6 +87,10 @@
       </div>
       <div class="drop-target" id="drop-target"><i data-lucide="plus" aria-hidden="true"></i><span>放入你的照片</span><p>最多 3,000 张 · 自动按色温光谱编排</p></div>
       <div class="error-card" id="error-card" hidden><h2>暂时无法打开空间</h2><p id="error-message"></p><button class="button" id="retry">重新打开</button><button class="button" id="browse-fallback">浏览相册</button></div>
+      <div class="scroll-cue chrome" id="scroll-cue" aria-hidden="true">
+        <span class="scroll-cue-line"></span>
+        <span>滚动推进五幕时空 · 拖动环视</span>
+      </div>
       <div class="film-status" id="film-status" hidden>
         <div class="film-meta">
           <span id="film-description">漫游</span>
@@ -109,7 +113,17 @@
       <button id="restore-ui" class="button" hidden><i data-lucide="eye" aria-hidden="true"></i><span>显示界面</span><kbd>H</kbd></button>
       <input type="file" id="file-input" accept="image/*,.heic,.heif" multiple hidden />
       <dialog id="gallery-dialog" aria-labelledby="gallery-title">
-        <div class="gallery-header"><h2 id="gallery-title">相册</h2><button class="dialog-close icon-button" aria-label="关闭相册"><i data-lucide="x" aria-hidden="true"></i></button></div>
+        <div class="gallery-header">
+          <div class="gallery-title-group">
+            <h2 id="gallery-title">相册</h2>
+            <label class="vault-inline-toggle" for="gallery-remember">
+              <input type="checkbox" id="gallery-remember" />
+              <span>本机记住相册</span>
+            </label>
+          </div>
+          <button class="dialog-close icon-button" aria-label="关闭相册"><i data-lucide="x" aria-hidden="true"></i></button>
+        </div>
+        <div id="gallery-chapters" class="gallery-chapters" role="group" aria-label="按拍摄年份筛选" hidden></div>
         <div id="gallery-grid" class="gallery-grid"></div>
         <div class="gallery-pagination"><span id="gallery-range"></span><div><button id="gallery-previous" class="icon-button" aria-label="上一页照片"><i data-lucide="arrow-left" aria-hidden="true"></i></button><button id="gallery-next" class="icon-button" aria-label="下一页照片"><i data-lucide="arrow-right" aria-hidden="true"></i></button></div></div>
       </dialog>
@@ -134,13 +148,23 @@
             <button type="button" data-aspect="9:16" aria-pressed="false">9:16 竖屏</button>
           </div>
         </div>
+        <div class="vault-card">
+          <label class="vault-toggle" for="remember-album">
+            <div>
+              <span class="vault-title">在此设备记住导入相册</span>
+              <span class="vault-desc" id="vault-status">IndexedDB 纯本地存储 · 默认关闭保护隐私</span>
+            </div>
+            <input type="checkbox" id="remember-album" />
+          </label>
+          <button type="button" class="vault-clear-btn" id="clear-vault" hidden>清除本机缓存相册</button>
+        </div>
         <div class="settings-actions"><button id="reset"><i data-lucide="rotate-ccw" aria-hidden="true"></i>重置视角</button><button id="clean"><i data-lucide="eye-off" aria-hidden="true"></i>隐藏界面<kbd>H</kbd></button><button id="fullscreen"><i data-lucide="maximize" aria-hidden="true"></i><span>进入全屏</span></button></div>
       </dialog>
       <dialog id="help-dialog" aria-labelledby="help-title">
         <button class="dialog-close icon-button" aria-label="关闭说明"><i data-lucide="x" aria-hidden="true"></i></button>
         <h2 id="help-title">慢慢探索。</h2>
-        <p>拖动旋转，滚轮或双指缩放。点击任意三维照片将飞入它的物理位置原位凝视，背景化为光学散景，按方向键、滑动或点击刻度即可在相片间穿梭。</p>
-        <p>导入或拖入最多 3,000 张照片，系统会提取色温并按光谱流向构筑星环与走廊。所有照片仅留在当前浏览器。</p>
+        <p>触控板或滚轮可直接推进与倒退五幕时空叙事，任意时刻拖动可环视偏航。点击任意三维照片将飞入它的物理位置原位凝视，背景化为光学散景。</p>
+        <p>导入或拖入最多 3,000 张照片，系统自动读取 EXIF 拍摄年份生成章节锚点，并按光谱流向构筑星环与走廊。开启「本机记住相册」可将相册安全保存在当前设备 IndexedDB 中，绝不上传网络。</p>
         <div class="help-shortcuts"><span><kbd>空格</kbd> 暂停</span><span><kbd>←</kbd><kbd>→</kbd> 穿梭凝视</span><span><kbd>H</kbd> 隐藏界面</span><span><kbd>Esc</kbd> 退出</span></div>
         <button id="demo" class="button">恢复精选相册</button>
         <div class="help-links"><a href="./editorial/SOURCES.md" target="_blank" rel="noreferrer">摄影来源</a><a href="https://www.douyin.com/video/7692616221573117321" target="_blank" rel="noreferrer">参考作品<i data-lucide="arrow-up-right" aria-hidden="true"></i></a></div>

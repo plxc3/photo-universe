@@ -467,10 +467,16 @@ export class PhotoUniverse {
     if (!pointers?.has(event.pointerId) || this.film) return;
     const previous = pointers.get(event.pointerId);
     const dx = event.clientX - previous[0];
-    const moved = Math.hypot(dx, event.clientY - previous[1]);
+    const dy = event.clientY - previous[1];
+    const moved = Math.hypot(dx, dy);
     pointers.set(event.pointerId, [event.clientX, event.clientY]);
     if (pointers.size === 1 && !this.focusState && !this.reducedMotion) {
       this._dragBankTarget = clamp((this._dragBankTarget || 0) * 0.65 - dx * 0.00055, -0.028, 0.028);
+    }
+    if (pointers.size === 1 && !this.focusState && this.scrollTimeline && moved > 0.5) {
+      this.scrollTimeline.targetYaw = clamp(this.scrollTimeline.targetYaw + dx * 0.0035, -0.85, 0.85);
+      this.scrollTimeline.targetPitch = clamp(this.scrollTimeline.targetPitch + dy * 0.0026, -0.48, 0.48);
+      this.scrollTimeline.resting = false;
     }
     const tap = this.tapGesture;
     if (tap?.pointerId === event.pointerId) tap.maxDistance = Math.max(tap.maxDistance, Math.hypot(event.clientX - tap.x, event.clientY - tap.y));
@@ -668,13 +674,21 @@ export class PhotoUniverse {
     }
     // Settle any active morph so the card sits on a stable world pose.
     if (this.instanceDirty) {
-      for (const instance of this.instances) {
-        instance.position.copy(instance.targetPosition);
-        instance.quaternion.copy(instance.targetQuaternion);
-        instance.scale = instance.targetScale;
-        instance.settled = true;
+      if (this.morph?.scrollControlled) {
+        if (this.scrollTimeline) {
+          this.scrollTimeline.targetTime = this.scrollTimeline.currentTime;
+          this.scrollTimeline.resting = true;
+        }
+        this.updateInstanceTransforms(0);
+      } else {
+        for (const instance of this.instances) {
+          instance.position.copy(instance.targetPosition);
+          instance.quaternion.copy(instance.targetQuaternion);
+          instance.scale = instance.targetScale;
+          instance.settled = true;
+        }
+        this.writeInstanceMatrices();
       }
-      this.writeInstanceMatrices();
     }
 
     const saved = this.focusState?.saved || {
@@ -945,7 +959,7 @@ export class PhotoUniverse {
     this.focusState = null;
     this.focusGeneration++;
     this._disposeFocusPlate();
-    this.controls.enabled = true;
+    this.controls.enabled = !this.scrollTimeline;
     this.defaultView = saved.defaultView;
     this.heldViewOffset = saved.heldViewOffset;
     this.running = saved.running;
@@ -991,6 +1005,10 @@ export class PhotoUniverse {
   // canvas we just zeroed.
   clearPhotos(keepCanvases = null) {
     if (this.focusState) this.closeFocus(true, false);
+    if (this.scrollTimeline) {
+      this.scrollTimeline = null;
+      if (this.controls) this.controls.enabled = true;
+    }
     this._disposeFocusPlate();
     for (const mesh of this.meshes) {
       this.group.remove(mesh);
@@ -1526,6 +1544,7 @@ export class PhotoUniverse {
   startFilm() {
     if (this.film) return;
     if (this.focusState) this.closeFocus(true);
+    if (this.scrollTimeline) this.exitScrollTimeline(false);
     this.flushDamping();
     // Bake the tiny interactive parent tilt into the sculpture before removing
     // parallax, preserving exactly the same world pose on the capture's first frame.
@@ -1648,6 +1667,197 @@ export class PhotoUniverse {
     this.callbacks.onFilmProgress?.(target);
   }
 
+  /**
+   * Enable homepage scroll-driven 5-act scrollytelling (wheel advances timeline
+   * instead of OrbitControls zoom, while drag yaws/pitches around any act).
+   */
+  enableScrollTheatre(enabled = true) {
+    this.scrollTheatreEnabled = Boolean(enabled);
+    if (this.controls) {
+      this.controls.enableZoom = !this.scrollTheatreEnabled;
+    }
+  }
+
+  exitScrollTimeline(reset = false) {
+    if (!this.scrollTimeline) {
+      if (reset) this.resetView(false);
+      return;
+    }
+    this.bakeTunnelPose(true);
+    this.scrollTimeline = null;
+    this.controls.enabled = !this.film && !this.focusState;
+    if (this.controls) this.controls.enableZoom = !this.scrollTheatreEnabled;
+    this.flushDamping();
+    this.alignIdlePhase();
+    if (reset) this.resetView(false);
+  }
+
+  setScrollTimeline(seconds, { immediate = false } = {}) {
+    if (this.focusState) this.closeFocus(true);
+    if (this.film) {
+      const filmTime = this.film.elapsed || 0;
+      this.stopFilm(false, false);
+      if (seconds === undefined) seconds = filmTime;
+    }
+    const clamped = clamp(Number(seconds) || 0, 0, FILM.total - 0.02);
+    if (!this.scrollTimeline) {
+      this.flushDamping();
+      if (this.parallaxGroup) {
+        this.group.quaternion.premultiply(this.parallaxGroup.quaternion);
+        this.parallaxGroup.quaternion.identity();
+        this.pointerCurrent?.set(0, 0);
+      }
+      if (this.photoUniforms) this.photoUniforms.uReveal.value = 1;
+      this.reveal = null;
+      this.viewTransition = null;
+      this.heldViewOffset = null;
+      this.controls.enabled = false;
+      const aspect = this.camera.aspect;
+      const startPose = {
+        position: orbitPosition(aspect),
+        target: [0, 0, 0],
+        up: [0, 1, 0],
+        fov: 54,
+        rotation: restRotation(aspect),
+      };
+      this.scrollTimeline = {
+        currentTime: clamped,
+        targetTime: clamped,
+        startPose,
+        startRingAngles: [0, 0, 0, 0],
+        lookYaw: 0,
+        lookPitch: 0,
+        targetYaw: 0,
+        targetPitch: 0,
+        region: null,
+        resting: false,
+      };
+      this._applyScrollTimelinePose(clamped, 0);
+      return clamped;
+    }
+    this.scrollTimeline.targetTime = clamped;
+    this.scrollTimeline.resting = false;
+    if (immediate || this.reducedMotion) {
+      this.scrollTimeline.currentTime = clamped;
+      this._applyScrollTimelinePose(clamped, 0);
+    }
+    return clamped;
+  }
+
+  scrollByTimeline(deltaSeconds) {
+    const base = this.scrollTimeline
+      ? this.scrollTimeline.targetTime
+      : this.film
+        ? (this.film.elapsed || 0)
+        : 0;
+    return this.setScrollTimeline(base + (Number(deltaSeconds) || 0));
+  }
+
+  _applyScrollTimelinePose(t, dt = 0) {
+    const st = this.scrollTimeline;
+    if (!st) return;
+    const target = clamp(t, 0, FILM.total - 0.02);
+    const implosionEnd = FILM.phase1 + 2.2;
+    const region = target < FILM.phase1
+      ? 'orbit-intro'
+      : target < implosionEnd
+        ? 'implosion'
+        : target < FILM.reassemble
+          ? 'tunnel-cruise'
+          : target < FILM.exitEnd
+            ? 'reassembly'
+            : 'orbit-finale';
+
+    if (st.region !== region) {
+      st.region = region;
+      if (region === 'orbit-intro' || region === 'orbit-finale') {
+        this.setFormation('orbit', true, false);
+      } else if (region === 'tunnel-cruise') {
+        this.setFormation('tunnel', true, false);
+      } else if (region === 'implosion') {
+        this.setFormation('orbit', true, false);
+        this.setFormation('tunnel', false, false, 2.2);
+        if (this.morph) this.morph.scrollControlled = true;
+      } else if (region === 'reassembly') {
+        this.setFormation('tunnel', true, false);
+        this.tunnelTwist = tunnelTwistAt(FILM.reassemble);
+        this.tunnelConveyor = tunnelConveyorAt(FILM.reassemble);
+        this.uploadInstanceMatrices();
+        this.setFormation('orbit', false, false, FILM.exitEnd - FILM.reassemble);
+        if (this.morph) this.morph.scrollControlled = true;
+      }
+    }
+
+    if (region === 'implosion' && this.morph) {
+      this.morph.scrollElapsed = Math.max(0, target - FILM.phase1);
+      this.instanceDirty = true;
+    } else if (region === 'reassembly' && this.morph) {
+      this.morph.scrollElapsed = Math.max(0, target - FILM.reassemble);
+      this.instanceDirty = true;
+    }
+
+    const s = sampleFlight(target, this.camera.aspect, st.startPose);
+    this.camera.position.fromArray(s.position);
+    this.camera.up.fromArray(s.up);
+    this.camera.fov = s.fov;
+    this.controls.target.fromArray(s.target);
+    this.group.rotation.set(s.rotation[0], s.rotation[1], s.rotation[2]);
+
+    const blend = dt > 0 && !this.reducedMotion ? 1 - Math.exp(-dt * 12) : 1;
+    st.lookYaw = THREE.MathUtils.lerp(st.lookYaw, st.targetYaw, blend);
+    st.lookPitch = THREE.MathUtils.lerp(st.lookPitch, st.targetPitch, blend);
+
+    if (Math.abs(st.lookYaw) > 1e-5 || Math.abs(st.lookPitch) > 1e-5) {
+      const lookQuat = (this._scrollLookQuat ||= new THREE.Quaternion()).setFromEuler(
+        (this._scrollLookEuler ||= new THREE.Euler()).set(st.lookPitch, st.lookYaw, 0, 'YXZ')
+      );
+      if (s.mode === 'tunnel') {
+        const dir = (this._scrollLookDir ||= new THREE.Vector3())
+          .subVectors(this.controls.target, this.camera.position)
+          .applyQuaternion(lookQuat);
+        this.controls.target.copy(this.camera.position).add(dir);
+      } else {
+        this.group.quaternion.premultiply(lookQuat);
+      }
+    }
+
+    this.camera.lookAt(this.controls.target);
+    this.camera.updateProjectionMatrix();
+    this.applyViewOffset();
+
+    const startRings = st.startRingAngles;
+    this.tunnelTwist = tunnelTwistAt(target);
+    this.tunnelConveyor = tunnelConveyorAt(target);
+    this.stellationBreath = stellationBreathAt(target);
+    this.ringAngles = [
+      armillarySpinAt(target, 0, startRings[0]),
+      armillarySpinAt(target, 1, startRings[1]),
+      armillarySpinAt(target, 2, startRings[2]),
+      armillarySpinAt(target, 3, startRings[3]),
+    ];
+    if (dt === 0) {
+      this.updateInstanceTransforms(0);
+    }
+    this.callbacks.onFilmProgress?.(target);
+  }
+
+  updateScrollTimeline(dt) {
+    const st = this.scrollTimeline;
+    if (!st || this.focusState || st.resting) return;
+    const factor = this.reducedMotion ? 1 : 1 - Math.exp(-dt * 9.5);
+    st.currentTime = THREE.MathUtils.lerp(st.currentTime, st.targetTime, factor);
+    const timeDiff = Math.abs(st.targetTime - st.currentTime);
+    if (timeDiff < 1e-4) st.currentTime = st.targetTime;
+    this._applyScrollTimelinePose(st.currentTime, dt);
+    const yawDiff = Math.abs(st.targetYaw - st.lookYaw);
+    const pitchDiff = Math.abs(st.targetPitch - st.lookPitch);
+    if (timeDiff < 1e-4 && yawDiff < 1e-4 && pitchDiff < 1e-4) {
+      st.lookYaw = st.targetYaw;
+      st.lookPitch = st.targetPitch;
+      st.resting = true;
+    }
+  }
+
   updateFilm(time) {
     if (this.film.scrubPaused) {
       this.film.start = time - (this.film.elapsed || 0) * 1000;
@@ -1695,9 +1905,11 @@ export class PhotoUniverse {
         // not leave the geometry behind the already-completed camera move.
         morph.elapsed = Math.min(morph.duration, this.film && Number.isFinite(morph.filmStart)
           ? Math.max(0, this.film.elapsed - morph.filmStart)
-          : morph.elapsed + dt);
+          : morph.scrollControlled
+            ? clamp(morph.scrollElapsed ?? morph.elapsed, 0, morph.duration)
+            : morph.elapsed + dt);
       }
-      const done = this.reducedMotion || !morph || morph.elapsed >= morph.duration;
+      const done = this.reducedMotion || !morph || (!morph.scrollControlled && morph.elapsed >= morph.duration);
       const vortex = !done && Boolean(morph?.vortex);
       const direction = morph?.vortexDirection || 1;
       const swirlQuat = vortex ? (this._swirlQuat ||= new THREE.Quaternion()) : null;
@@ -1750,7 +1962,12 @@ export class PhotoUniverse {
           instance.scale = THREE.MathUtils.lerp(instance.fromScale, instance.targetScale, progress);
         }
       }
-      if (done) { this.instanceDirty = false; this.morph = null; }
+      if (done) {
+        this.instanceDirty = false;
+        this.morph = null;
+      } else if (morph?.scrollControlled) {
+        this.instanceDirty = false;
+      }
     }
     const dynamicDirty =
       (this.tunnelTwist || 0) !== (this.appliedTunnelTwist || 0) ||
@@ -1877,6 +2094,8 @@ export class PhotoUniverse {
 
     if (this.film) {
       if (!this.film.manual) this.updateFilm(time);
+    } else if (this.scrollTimeline && !this.focusState && !this.viewTransition) {
+      this.updateScrollTimeline(dt);
     } else {
       if (this.viewTransition) {
         const view = this.viewTransition;
@@ -1917,7 +2136,7 @@ export class PhotoUniverse {
           }
         }
       }
-      if (!this.focusState) this.controls.update();
+      if (!this.focusState && !this.scrollTimeline) this.controls.update();
     }
     if (this.parallaxGroup) {
       const allowed = this.pointerEnabled && !this.reducedMotion && !this.dragging && !this.film && !this.focusState;

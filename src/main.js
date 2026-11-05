@@ -21,10 +21,19 @@ import {
 } from 'lucide';
 import { PhotoUniverse } from './scene.js';
 import { FORMATIONS } from './formations.js';
-import { loadDemoPhotos, loadLocalPhotos, buildPhotoAtlases, releasePhotos, getPhotoThumbnail } from './photos.js';
+import {
+  loadDemoPhotos,
+  loadLocalPhotos,
+  buildPhotoAtlases,
+  releasePhotos,
+  getPhotoThumbnail,
+  extractLocalPhotoFiles,
+  buildYearChapters,
+} from './photos.js';
 import { CanvasRecorder, CINEMA_VIDEO_BITS_PER_SECOND } from './recording.js';
 import { FrameProfiler } from './performance.js';
 import { SpatialSoundscape } from './audio.js';
+import { AlbumVault } from './storage.js';
 
 const $ = id => document.getElementById(id);
 const icons = {
@@ -51,7 +60,12 @@ const params = new URLSearchParams(location.search);
 const inspecting = params.has('inspect');
 const debugEnabled = inspecting || params.has('debug');
 const profiler = new FrameProfiler();
-const soundscape = new SpatialSoundscape();
+const stemUrl = new URL(
+  'audio/felt-chamber-stem.mp3',
+  new URL(import.meta.env?.BASE_URL || '/', location.href),
+).href;
+const soundscape = new SpatialSoundscape({ stemUrl });
+const albumVault = new AlbumVault();
 try {
   const savedMuted = localStorage.getItem('memoria:muted');
   if (savedMuted === 'true' || window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
@@ -64,6 +78,8 @@ let photos = [];
 let fallbackAtlases = [];
 let pageDisposed = false;
 let validPhotoIndices = [];
+let yearChapters = [];
+let activeChapterKey = 'all';
 let selectedPhoto = 0;
 let busy = false;
 let toastTimer;
@@ -213,8 +229,9 @@ function updateFocusCaption(photo, position) {
   const idxPad = String(position + 1).padStart(2, '0');
   $('focus-number').textContent = 'No. ' + idxPad + ' / ' + validPhotoIndices.length.toLocaleString();
   const aspectTag = formatAspectTag(photo);
-  const tone = photo.toneLabel || '暗房 · ARCHIVE';
-  $('focus-tone').textContent = aspectTag ? tone + ' · ' + aspectTag : tone;
+  const dateTag = photo.capturedDate || (photo.capturedYear ? String(photo.capturedYear) : '');
+  const parts = [photo.toneLabel || '暗房 · ARCHIVE', aspectTag, dateTag].filter(Boolean);
+  $('focus-tone').textContent = parts.join(' · ');
   renderFocusStrip(position);
 }
 
@@ -325,18 +342,85 @@ function releaseAtlasCanvases(atlases) {
   }
 }
 
+function filteredGalleryIndices() {
+  if (activeChapterKey === 'all') return validPhotoIndices;
+  const chapter = yearChapters.find(ch => ch.key === activeChapterKey);
+  return chapter ? chapter.photoIndices : validPhotoIndices;
+}
+
+function renderGalleryChapters() {
+  const bar = $('gallery-chapters');
+  if (!bar) return;
+  bar.replaceChildren();
+  if (!yearChapters.length) {
+    bar.hidden = true;
+    return;
+  }
+  bar.hidden = false;
+  const createPill = (key, text) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = text;
+    btn.setAttribute('aria-pressed', String(activeChapterKey === key));
+    btn.addEventListener('click', () => {
+      activeChapterKey = key;
+      galleryPage = 0;
+      renderGalleryChapters();
+      renderGallery();
+    });
+    return btn;
+  };
+  bar.append(createPill('all', '全部 · ' + validPhotoIndices.length));
+  for (const ch of yearChapters) {
+    bar.append(createPill(ch.key, ch.label + ' · ' + ch.count));
+  }
+}
+
+async function syncVaultUI() {
+  const supported = albumVault.isSupported();
+  const enabled = albumVault.enabled;
+  for (const id of ['remember-album', 'gallery-remember']) {
+    const el = $(id);
+    if (el) {
+      el.checked = enabled;
+      el.disabled = !supported;
+    }
+  }
+  const statusEl = $('vault-status');
+  const clearBtn = $('clear-vault');
+  if (!supported) {
+    if (statusEl) statusEl.textContent = '当前浏览器不支持 IndexedDB 本地存储';
+    if (clearBtn) clearBtn.hidden = true;
+    return;
+  }
+  const { count, totalBytes } = await albumVault.getStats();
+  if (statusEl) {
+    if (enabled && count > 0) {
+      const mb = (totalBytes / (1024 * 1024)).toFixed(1);
+      statusEl.textContent = '本机已缓存 ' + count.toLocaleString() + ' 张 · ' + mb + ' MB（纯本地 IndexedDB）';
+    } else if (enabled) {
+      statusEl.textContent = '已开启 · 导入照片后将自动保存在当前设备';
+    } else {
+      statusEl.textContent = 'IndexedDB 纯本地存储 · 默认关闭保护隐私';
+    }
+  }
+  if (clearBtn) clearBtn.hidden = count === 0;
+}
+
 function renderGallery() {
   clearGalleryThumbnails();
   galleryAbort = new AbortController();
   const generation = galleryGeneration;
   const grid = $('gallery-grid');
+  const list = filteredGalleryIndices();
   const start = galleryPage * PAGE_SIZE;
-  const end = Math.min(start + PAGE_SIZE, validPhotoIndices.length);
+  const end = Math.min(start + PAGE_SIZE, list.length);
   for (let position = start; position < end; position++) {
-    const index = validPhotoIndices[position];
+    const index = list[position];
     const photo = photos[index];
     const button = document.createElement('button');
-    button.setAttribute('aria-label', '查看照片 ' + (position + 1) + '，' + (photo.author || photo.name));
+    const yearSuffix = photo.capturedYear ? '（' + photo.capturedYear + '）' : '';
+    button.setAttribute('aria-label', '查看照片 ' + (position + 1) + '，' + (photo.author || photo.name) + yearSuffix);
     const img = document.createElement('img');
     if (photo.source === 'demo') img.src = photo.thumbnailUrl || photo.url;
     img.alt = photo.name;
@@ -360,17 +444,20 @@ function renderGallery() {
         .then(thumbnail => applyThumbnail(thumbnail, true)).catch(() => {});
     }
   }
-  $('gallery-range').textContent = validPhotoIndices.length ? (start + 1).toLocaleString() + '–' + end.toLocaleString() + ' / ' + validPhotoIndices.length.toLocaleString() : '0';
+  $('gallery-range').textContent = list.length ? (start + 1).toLocaleString() + '–' + end.toLocaleString() + ' / ' + list.length.toLocaleString() : '0';
   $('gallery-previous').disabled = start === 0;
-  $('gallery-next').disabled = end >= validPhotoIndices.length;
+  $('gallery-next').disabled = end >= list.length;
   $('gallery-dialog').scrollTop = 0;
 }
 
 function openGallery() {
   if (busy || !validPhotoIndices.length) return;
   if (universe?.focusState) universe.closeFocus(true);
+  activeChapterKey = 'all';
   galleryPage = Math.floor(selectedPhoto / PAGE_SIZE);
+  renderGalleryChapters();
   renderGallery();
+  syncVaultUI();
   galleryPlaying = universe?.running ?? false;
   if (universe) universe.running = false;
   $('gallery-dialog').showModal();
@@ -385,11 +472,12 @@ function setBusy(value) {
   $('scene').setAttribute('aria-busy', String(value));
 }
 
-async function importPhotos(files) {
+async function importPhotos(files, options = {}) {
   if (busy || pageDisposed) return;
   galleryAbort?.abort();
   if (universe?.focusState) universe.closeFocus(true);
   if (universe?.film) { universe.stopFilm(true, false); universe.setFormation('orbit'); }
+  exitScrollMode(false);
   if ($('photo-dialog').open) $('photo-dialog').close();
   if ($('gallery-dialog').open) $('gallery-dialog').close();
   for (const dialog of document.querySelectorAll('dialog[open]')) dialog.close();
@@ -431,15 +519,36 @@ async function importPhotos(files) {
     pendingPhotos = null;
     pendingAtlases = null;
     validPhotoIndices = indices;
+    yearChapters = buildYearChapters(photos, validPhotoIndices);
+    activeChapterKey = 'all';
     selectedPhoto = 0;
     releasePhotos(oldPhotos);
     releaseAtlasCanvases(oldFallbackAtlases);
+    const chapterCount = yearChapters.filter(ch => ch.year !== null).length;
     $('photo-count').textContent = indices.length.toLocaleString() + ' 张照片';
     $('collection').setAttribute('aria-label', '浏览相册，' + indices.length.toLocaleString() + ' 张照片');
     $('particle-count').textContent = Math.max(SCENE_POSITIONS, indices.length).toLocaleString() + ' 个照片位置';
     $('gallery-title').textContent = files ? '我的相册' : '精选相册';
-    if (files) toast('已导入 ' + indices.length.toLocaleString() + ' 张' + (skipped ? '，跳过 ' + skipped + ' 个无法读取的文件' : '') + '。色温光谱已编排。');
-    else if (skipped) toast(skipped + ' 张照片暂时无法读取。');
+
+    if (files && !options.restoredFromVault && albumVault.enabled) {
+      const localBlobs = extractLocalPhotoFiles(photos, validPhotoIndices);
+      albumVault.saveFiles(localBlobs).then(() => syncVaultUI()).catch(() => {});
+    } else {
+      syncVaultUI();
+    }
+
+    if (options.restoredFromVault) {
+      toast('已从本机恢复 ' + indices.length.toLocaleString() + ' 张私人相册' + (chapterCount ? ' · ' + chapterCount + ' 个年份章节' : '') + '。');
+    } else if (files) {
+      toast(
+        '已导入 ' + indices.length.toLocaleString() + ' 张' +
+        (chapterCount ? '（识别 ' + chapterCount + ' 个年份章节）' : '') +
+        (skipped ? '，跳过 ' + skipped + ' 个无法读取的文件' : '') +
+        '。'
+      );
+    } else if (skipped) {
+      toast(skipped + ' 张照片暂时无法读取。');
+    }
     syncPlaying();
   } catch (error) {
     if (pageDisposed) return;
@@ -469,10 +578,32 @@ function setChromeInert() {
   document.querySelectorAll('.chrome').forEach(element => { element.inert = hidden; });
 }
 
+function showScrollChrome(active) {
+  $('app').classList.toggle('scroll-active', active);
+  if (!universe?.film) {
+    $('film-status').hidden = !active;
+    if (active) {
+      $('film-description').textContent = '滚轮叙事';
+      $('stop-film').setAttribute('aria-label', '重置回序幕星环');
+      $('stop-film').title = '重置回序幕星环';
+    }
+  }
+}
+
+function exitScrollMode(reset = false) {
+  showScrollChrome(false);
+  universe?.exitScrollTimeline(reset);
+}
+
 function showFilmChrome(active) {
-  if (active) filmFocus = document.activeElement;
+  if (active) {
+    $('app').classList.remove('scroll-active');
+    filmFocus = document.activeElement;
+    $('stop-film').setAttribute('aria-label', '结束漫游');
+    $('stop-film').title = '结束漫游';
+  }
   $('app').classList.toggle('film-active', active);
-  $('film-status').hidden = !active;
+  $('film-status').hidden = !active && !$('app').classList.contains('scroll-active');
   setChromeInert();
   if (active) $('stop-film').focus({ preventScroll: true });
   else if (filmFocus?.isConnected && !$('app').classList.contains('clean')) filmFocus.focus({ preventScroll: true });
@@ -583,6 +714,7 @@ function togglePlaying() {
   if (!universe || busy) return;
   if (universe.focusState) { universe.closeFocus(false); return; }
   if (universe.film) leaveFilm();
+  if (universe.scrollTimeline) exitScrollMode(false);
   universe.running = !universe.running;
   syncPlaying();
 }
@@ -743,7 +875,8 @@ try {
           $('reticle-number').textContent = pos >= 0 ? 'No. ' + String(pos + 1).padStart(2, '0') : '';
         }
         if ($('reticle-label')) {
-          $('reticle-label').textContent = photo.source === 'demo' && photo.author ? photo.author : photo.name;
+          const baseName = photo.source === 'demo' && photo.author ? photo.author : photo.name;
+          $('reticle-label').textContent = photo.capturedYear ? baseName + ' · ' + photo.capturedYear : baseName;
         }
       } else if (reticleEl.dataset.state === 'photo') {
         delete reticleEl.dataset.state;
@@ -760,15 +893,54 @@ try {
       if (universe) soundscape.update(universe.getAudioModulation());
     },
   });
+  universe.enableScrollTheatre(true);
   universe.speed = Number($('speed').value);
   syncPlaying();
   if (debugEnabled) {
-    window.__memoria = { universe, soundscape };
+    window.__memoria = { universe, soundscape, albumVault };
   }
 } catch {
   showError('浏览器无法启动三维空间。请开启硬件加速，或使用新版 Chrome / Edge。相册仍可浏览。');
 }
-importPhotos();
+
+async function bootstrapAlbum() {
+  await syncVaultUI();
+  if (albumVault.enabled) {
+    try {
+      const saved = await albumVault.loadFiles();
+      if (saved.length) {
+        await importPhotos(saved, { restoredFromVault: true });
+        return;
+      }
+    } catch {}
+  }
+  await importPhotos();
+}
+bootstrapAlbum();
+
+async function handleRememberToggle(checked) {
+  const active = await albumVault.setEnabled(checked);
+  if (active && photos.length && photos[0]?.source === 'local') {
+    try {
+      const filesToSave = extractLocalPhotoFiles(photos, validPhotoIndices);
+      const { saved } = await albumVault.saveFiles(filesToSave);
+      if (saved > 0) toast('已将当前 ' + saved.toLocaleString() + ' 张相册安全保存在本机。');
+    } catch (err) {
+      toast(err?.message || '本机缓存保存失败，请检查浏览器存储空间。');
+    }
+  } else if (!active) {
+    toast('已关闭本机相册记忆并清除缓存。');
+  }
+  await syncVaultUI();
+}
+
+$('remember-album')?.addEventListener('change', event => handleRememberToggle(event.target.checked));
+$('gallery-remember')?.addEventListener('change', event => handleRememberToggle(event.target.checked));
+$('clear-vault')?.addEventListener('click', async () => {
+  await albumVault.clear().catch(() => {});
+  await syncVaultUI();
+  toast('已清除本机缓存相册。');
+});
 
 $('import').addEventListener('click', () => $('file-input').click());
 $('file-input').addEventListener('change', event => { if (event.target.files.length) importPhotos(event.target.files); });
@@ -778,13 +950,14 @@ $('sound-toggle').addEventListener('click', () => {
 });
 $('retry').addEventListener('click', () => location.reload());
 $('help').addEventListener('click', () => $('help-dialog').showModal());
-$('settings').addEventListener('click', () => $('settings-dialog').showModal());
+$('settings').addEventListener('click', () => { syncVaultUI(); $('settings-dialog').showModal(); });
 $('collection').addEventListener('click', openGallery);
 $('browse-fallback').addEventListener('click', openGallery);
 $('demo').addEventListener('click', () => { $('help-dialog').close(); importPhotos(); });
 $('brand').addEventListener('click', () => {
   if (universe?.focusState) { universe.closeFocus(false); return; }
   leaveFilm();
+  exitScrollMode(false);
   if (universe?.mode !== 'orbit') universe?.setFormation('orbit');
   else universe?.resetView(false);
 });
@@ -839,6 +1012,7 @@ $('photo-stage').addEventListener('pointerup', event => {
 document.querySelectorAll('[data-mode]').forEach(button => button.addEventListener('click', () => {
   if (!universe || busy) return;
   leaveFilm(false);
+  exitScrollMode(false);
   soundscape.playFocusPulse(true);
   universe.setFormation(button.dataset.mode);
 }));
@@ -849,15 +1023,18 @@ document.querySelectorAll('[data-aspect]').forEach(button => button.addEventList
   });
 }));
 $('film-scrubber').addEventListener('pointerdown', () => {
-  if (!universe?.film || recorder) return;
+  if ((!universe?.film && !universe?.scrollTimeline) || recorder) return;
   scrubbingFilm = true;
-  universe.seekFilmLive(Number($('film-scrubber').value), { paused: true });
+  const val = Number($('film-scrubber').value);
+  if (universe.film) universe.seekFilmLive(val, { paused: true });
+  else universe.setScrollTimeline(val, { immediate: true });
 });
 $('film-scrubber').addEventListener('input', () => {
-  if (!universe?.film || recorder) return;
+  if ((!universe?.film && !universe?.scrollTimeline) || recorder) return;
   scrubbingFilm = true;
   const seconds = Number($('film-scrubber').value);
-  universe.seekFilmLive(seconds, { paused: true });
+  if (universe.film) universe.seekFilmLive(seconds, { paused: true });
+  else universe.setScrollTimeline(seconds, { immediate: true });
   $('film-scrubber').value = String(seconds);
 });
 const finishScrub = () => {
@@ -873,34 +1050,44 @@ $('film-scrubber').addEventListener('change', finishScrub);
 
 document.querySelectorAll('[data-act-seek]').forEach(button => {
   button.addEventListener('click', () => {
-    if (!universe?.film || recorder) return;
+    if ((!universe?.film && !universe?.scrollTimeline) || recorder) return;
     const targetSec = Number(button.dataset.actSeek) || 0;
     soundscape.playFocusPulse(true);
-    universe.seekFilmLive(targetSec, { paused: false });
+    if (universe.film) universe.seekFilmLive(targetSec, { paused: false });
+    else universe.setScrollTimeline(targetSec);
   });
 });
 
-let wheelScrubTimer;
+// Pure Scroll-Driven 5-Act Scrollytelling on the homepage (and seamless takeover from active tour)
 window.addEventListener('wheel', event => {
-  if (!universe?.film || recorder || document.querySelector('dialog[open]')) return;
-  if (Math.abs(event.deltaY) < 1) return;
+  if (!universe || busy || recorder || universe.focusState || document.querySelector('dialog[open]') || event.ctrlKey) {
+    return;
+  }
+  const unitScale = event.deltaMode === 1 ? 24 : event.deltaMode === 2 ? 360 : 1;
+  const rawPx = (Math.abs(event.deltaY) >= Math.abs(event.deltaX) ? event.deltaY : event.deltaX) * unitScale;
+  if (Math.abs(rawPx) < 0.6) return;
   event.preventDefault();
-  const current = universe.film.elapsed || 0;
-  const next = Math.max(0, Math.min(29.6, current + event.deltaY * 0.012));
-  universe.seekFilmLive(next, { paused: true });
-  clearTimeout(wheelScrubTimer);
-  wheelScrubTimer = setTimeout(() => {
-    if (universe?.film && !recorder && !scrubbingFilm) {
-      universe.seekFilmLive(universe.film.elapsed || next, { paused: false });
-    }
-  }, 220);
+  wakeAudio();
+  const clampedPx = Math.max(-180, Math.min(180, rawPx));
+  if (universe.film) {
+    const handedTime = universe.film.elapsed || 0;
+    universe.stopFilm(false, false);
+    $('app').classList.remove('film-active');
+    setChromeInert();
+    universe.setScrollTimeline(handedTime, { immediate: true });
+  }
+  showScrollChrome(true);
+  universe.scrollByTimeline(clampedPx * 0.011);
 }, { passive: false });
 
 $('play').addEventListener('click', togglePlaying);
 $('speed').addEventListener('input', event => { if (universe) universe.speed = Number(event.target.value); });
-$('reset').addEventListener('click', () => { leaveFilm(false); universe?.resetView(false); $('settings-dialog').close(); });
+$('reset').addEventListener('click', () => { leaveFilm(false); exitScrollMode(false); universe?.resetView(false); $('settings-dialog').close(); });
 $('film').addEventListener('click', playFilm);
-$('stop-film').addEventListener('click', () => leaveFilm());
+$('stop-film').addEventListener('click', () => {
+  if (universe?.film) leaveFilm();
+  else exitScrollMode(true);
+});
 $('record').addEventListener('click', recordFilm);
 $('clean').addEventListener('click', toggleClean);
 $('restore-ui').addEventListener('click', toggleClean);
@@ -930,7 +1117,12 @@ document.addEventListener('keydown', event => {
     if (event.key === 'ArrowRight') { event.preventDefault(); nextPhoto(1); return; }
     if (event.key === 'Escape') { event.preventDefault(); universe.closeFocus(false); return; }
   }
-  if (event.key === 'Escape' && universe.film) { event.preventDefault(); leaveFilm(); return; }
+  if (event.key === 'Escape' && (universe.film || universe.scrollTimeline)) {
+    event.preventDefault();
+    if (universe.film) leaveFilm();
+    else exitScrollMode(true);
+    return;
+  }
   if (event.target.closest('input,textarea,select')) return;
   if (event.code === 'Space' && !event.target.closest('button,a')) { event.preventDefault(); togglePlaying(); }
   if (event.key.toLowerCase() === 'h') toggleClean();
@@ -959,6 +1151,7 @@ window.addEventListener('pagehide', event => {
   releasePhotos(photos);
   releaseAtlasCanvases(fallbackAtlases);
   fallbackAtlases = [];
+  albumVault.dispose();
   soundscape.dispose();
   universe?.dispose();
   if (downloadUrl) URL.revokeObjectURL(downloadUrl);
