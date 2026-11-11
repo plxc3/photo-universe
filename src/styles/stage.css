@@ -1,0 +1,493 @@
+/* 1px Viewport-Edge Optical Timeline Hairline */
+.timeline-hairline {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1.5px;
+  z-index: 9;
+  background: rgba(245, 241, 234, 0.045);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.55s var(--ease-out);
+}
+.scroll-active .timeline-hairline,
+.film-active .timeline-hairline {
+  opacity: 1;
+}
+.is-idle.scroll-active .timeline-hairline {
+  opacity: 0.42;
+}
+.focus-active .timeline-hairline,
+.threshold-locked .timeline-hairline {
+  opacity: 0 !important;
+}
+.timeline-hairline i {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, rgba(200, 162, 124, 0.35), var(--accent) 82%, #f5e6d3 100%);
+  transform: scaleX(var(--timeline-progress, 0));
+  transform-origin: left center;
+  box-shadow: 0 0 12px rgba(200, 162, 124, 0.55);
+}
+.timeline-scrub-zone {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 14px;
+  z-index: 10;
+  cursor: ew-resize;
+}
+.recording-active .timeline-scrub-zone {
+  pointer-events: none;
+  cursor: default;
+}
+
+/* Lusion 4-Corner Borderless Stage Whispers + 100% Zero-Text Idle Dissolve */
+.stage-hud {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+  opacity: 1;
+  transition: opacity 0.28s var(--ease-out);
+}
+.is-idle .stage-hud {
+  opacity: 0;
+  transition: opacity 0.95s var(--ease-out);
+}
+.threshold-locked .stage-hud,
+.focus-active .stage-hud,
+.clean .stage-hud,
+.recording-active .stage-hud {
+  opacity: 0;
+  pointer-events: none;
+}
+.hud-corner {
+  position: absolute;
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  pointer-events: auto;
+}
+.is-idle .hud-corner,
+.threshold-locked .hud-corner,
+.focus-active .hud-corner,
+.clean .hud-corner,
+.recording-active .hud-corner {
+  pointer-events: none;
+}
+.hud-tl {
+  top: calc(var(--pad-y) + env(safe-area-inset-top));
+  left: var(--pad-x);
+}
+.hud-tr {
+  top: calc(var(--pad-y) + env(safe-area-inset-top));
+  right: var(--pad-x);
+}
+.hud-bl {
+  bottom: calc(var(--pad-y) + env(safe-area-inset-bottom));
+  left: var(--pad-x);
+}
+.hud-br {
+  bottom: calc(var(--pad-y) + env(safe-area-inset-bottom));
+  right: var(--pad-x);
+}
+
+.brand {
+  margin: 0;
+  line-height: 1;
+}
+.brand-link {
+  padding: 2px 0;
+}
+.brand-link::after {
+  display: none;
+}
+.brand-word {
+  font-family: var(--brand);
+  font-style: italic;
+  font-weight: 360;
+  font-size: clamp(24px, 2vw, 31px);
+  letter-spacing: -0.035em;
+  color: var(--text);
+  opacity: 0.9;
+  transition: opacity var(--dur-fast) ease;
+}
+.brand-link:hover .brand-word {
+  opacity: 1;
+}
+
+/* Living 4-Filament Soundwave Whisper */
+.sound-whisper {
+  align-items: center;
+  gap: 7px;
+}
+.sound-eq {
+  display: inline-flex;
+  align-items: center;
+  gap: 2.5px;
+  height: 12px;
+}
+.sound-eq i {
+  display: block;
+  width: 1px;
+  height: 11px;
+  background: var(--accent);
+  transform-origin: center;
+  animation: eq-breathe 1.4s ease-in-out infinite;
+}
+.sound-eq i:nth-child(1) { animation-delay: 0s; height: 7px; }
+.sound-eq i:nth-child(2) { animation-delay: 0.24s; height: 12px; }
+.sound-eq i:nth-child(3) { animation-delay: 0.48s; height: 9px; }
+.sound-eq i:nth-child(4) { animation-delay: 0.16s; height: 6px; }
+@keyframes eq-breathe {
+  0%, 100% { transform: scaleY(0.38); opacity: 0.65; }
+  50% { transform: scaleY(1); opacity: 1; }
+}
+#sound-toggle[aria-pressed='false'] {
+  color: var(--faint);
+}
+#sound-toggle[aria-pressed='false'] .sound-eq i {
+  animation: none;
+  background: currentColor;
+  transform: scaleY(0.22);
+  opacity: 0.48;
+}
+
+.whisper-num {
+  font-family: var(--brand);
+  font-style: italic;
+  font-size: 13px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+}
+
+.act-roman,
+.act-name,
+.act-time {
+  cursor: pointer;
+}
+.film-active .act-roman,
+.film-active .act-name,
+.film-active .act-time {
+  cursor: default;
+}
+.act-roman {
+  font-family: var(--brand);
+  font-style: italic;
+  font-size: 14px;
+  color: var(--accent);
+  text-shadow: var(--ink-shadow);
+}
+.act-name {
+  font-size: 11.5px;
+  letter-spacing: 0.08em;
+  color: var(--text);
+  opacity: 0.88;
+  text-shadow: var(--ink-shadow);
+}
+.act-time {
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+  text-shadow: var(--ink-shadow);
+}
+.stop-whisper {
+  color: var(--accent);
+  margin-left: 4px;
+}
+
+#record.recording {
+  color: var(--negative);
+  animation: recordPulse 1.5s ease-in-out infinite;
+}
+@keyframes recordPulse {
+  50% { opacity: 0.42; }
+}
+
+/* Igloo / Resn Two-Stage Darkroom Preloader & Bokeh Threshold Gate */
+.loader {
+  position: absolute;
+  inset: 0;
+  z-index: 16;
+  display: grid;
+  place-items: center;
+  background: #020204;
+  transition: background 1.25s var(--ease-out), opacity 1.05s var(--ease-out), transform 1.25s var(--ease-out);
+}
+.loader > * {
+  grid-area: 1 / 1;
+}
+.loader-dev {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  font-size: 10.5px;
+  letter-spacing: 0.16em;
+  color: var(--faint);
+  transition: opacity 0.65s var(--ease-out), transform 0.65s var(--ease-out);
+}
+.loader-kicker {
+  font-size: 9.5px;
+  letter-spacing: 0.32em;
+  color: var(--faint);
+}
+.loader-pct {
+  font-family: var(--brand);
+  font-style: italic;
+  font-weight: 300;
+  font-size: clamp(52px, 7.5vw, 88px);
+  line-height: 0.95;
+  letter-spacing: -0.04em;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.loader-rule {
+  width: min(190px, 50vw);
+  height: 1px;
+  background: rgba(245, 241, 234, 0.09);
+  overflow: hidden;
+}
+.loader-rule i {
+  display: block;
+  width: var(--load-pct, 8%);
+  height: 100%;
+  background: linear-gradient(90deg, rgba(200, 162, 124, 0.25), var(--accent));
+  transition: width 0.24s var(--ease-out);
+}
+
+/* Stage B: Dreamy Bokeh Threshold Gate */
+.threshold-veil {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 24px;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(14px);
+  transition: opacity 0.95s var(--ease-out), transform 1.05s var(--ease-out);
+}
+.loader[data-phase='threshold'] {
+  background: radial-gradient(
+    ellipse 40% 30% at 50% 49%,
+    rgba(2, 2, 4, 0.56) 0%,
+    rgba(2, 2, 4, 0.18) 54%,
+    rgba(2, 2, 4, 0.64) 100%
+  );
+  cursor: pointer;
+}
+.loader[data-phase='threshold'] .loader-dev {
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-10px) scale(0.97);
+}
+.loader[data-phase='threshold'] .threshold-veil {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+.loader[data-phase='entering'] {
+  background: rgba(2, 2, 4, 0);
+  opacity: 0;
+  transform: scale(1.035);
+  pointer-events: none;
+}
+.threshold-kicker {
+  font-size: 10px;
+  font-weight: 450;
+  letter-spacing: 0.34em;
+  color: rgba(245, 241, 234, 0.86);
+  text-shadow: 0 2px 16px rgba(0, 0, 0, 0.95), 0 0 32px rgba(0, 0, 0, 0.85);
+}
+.threshold-kicker em {
+  font-family: var(--brand);
+  font-style: italic;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  color: var(--accent);
+}
+.threshold-title {
+  margin: 14px 0 28px;
+  font-family: var(--brand);
+  font-style: italic;
+  font-weight: 320;
+  font-size: clamp(64px, 10.5vw, 132px);
+  line-height: 0.92;
+  letter-spacing: -0.045em;
+  color: var(--text);
+  text-shadow: 0 12px 44px rgba(0, 0, 0, 0.72);
+}
+.threshold-enter {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 20px;
+  color: rgba(245, 241, 234, 0.90);
+  text-shadow: 0 2px 16px rgba(0, 0, 0, 0.95), 0 0 32px rgba(0, 0, 0, 0.85);
+  transition: color var(--dur-fast) ease, transform 0.35s var(--ease-out);
+}
+.threshold-enter:hover {
+  color: var(--text);
+  transform: translateY(2px);
+}
+.threshold-line {
+  width: 1px;
+  height: 36px;
+  background: linear-gradient(180deg, transparent, var(--accent), transparent);
+  animation: gate-pulse 2.4s ease-in-out infinite;
+}
+@keyframes gate-pulse {
+  0%, 100% { opacity: 0.42; transform: scaleY(0.78); }
+  50% { opacity: 1; transform: scaleY(1.12); }
+}
+.threshold-prompt {
+  font-size: 11px;
+  letter-spacing: 0.24em;
+}
+
+/* Monopo Borderless Museum Exhibition Caption (#focus-hud) */
+.focus-hud {
+  position: absolute;
+  left: var(--pad-x);
+  right: var(--pad-x);
+  bottom: calc(var(--pad-y) + env(safe-area-inset-bottom));
+  z-index: 12;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: end;
+  gap: 24px;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(10px);
+  transition: opacity 0.24s var(--ease-out), transform 0.28s var(--ease-out);
+}
+.focus-active .focus-hud {
+  opacity: 1;
+  transform: translateY(0);
+  transition: opacity 0.44s var(--ease-out) 0.14s, transform 0.48s var(--ease-out) 0.14s;
+}
+.focus-active .focus-hud > * {
+  pointer-events: auto;
+}
+.focus-caption {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  text-shadow: var(--ink-shadow);
+  transition: opacity 0.30s var(--ease-out), transform 0.34s var(--ease-out);
+}
+.focus-caption.is-stepping-out {
+  opacity: 0;
+  transform: translate3d(calc(var(--step-dir, 1) * -8px), 2px, 0);
+  transition: opacity 0.13s ease-out, transform 0.15s ease-out;
+}
+.focus-caption.is-stepping-prep {
+  opacity: 0;
+  transform: translate3d(calc(var(--step-dir, 1) * 8px), 2px, 0);
+  transition: none !important;
+}
+.focus-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+.focus-swatch {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--photo-accent);
+  box-shadow: 0 0 10px var(--photo-accent);
+  flex: none;
+}
+.focus-number {
+  font-family: var(--brand);
+  font-style: italic;
+  font-size: 13.5px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  flex: none;
+}
+.focus-tone {
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--faint);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.focus-title-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.focus-title {
+  font-size: 13px;
+  font-weight: 450;
+  letter-spacing: 0.02em;
+  color: var(--text);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.focus-author {
+  font-family: var(--brand);
+  font-style: italic;
+  font-size: 12.5px;
+  color: var(--muted);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.focus-strip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 26px;
+}
+.focus-tick {
+  width: 8px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+}
+.focus-tick::before {
+  content: '';
+  display: block;
+  width: 1.5px;
+  height: 9px;
+  background: var(--tick-color, rgba(245, 241, 234, 0.3));
+  opacity: 0.42;
+  transition: transform 0.26s var(--ease-out), opacity 0.24s ease, background 0.24s ease;
+}
+.focus-tick:hover::before {
+  transform: scaleY(1.65);
+  opacity: 0.92;
+}
+.focus-tick[aria-current='true']::before {
+  width: 2px;
+  transform: scaleY(2.2);
+  background: var(--photo-accent);
+  opacity: 1;
+  box-shadow: 0 0 8px var(--photo-accent);
+}
+
+.focus-controls {
+  display: flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 12px;
+}

@@ -19,14 +19,17 @@
     "interactive-art",
     "vite"
   ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 5178",
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1 --port 5178",
-    "test": "node --test src/*.test.js"
+    "test": "node --test src/*.test.js",
+    "check": "npm test && npm run build"
   },
   "dependencies": {
-    "lucide": "^1.57.0",
     "three": "^0.180.0"
   },
   "devDependencies": {

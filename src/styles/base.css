@@ -1,0 +1,274 @@
+@font-face {
+  font-family: Newsreader;
+  src: url('/fonts/newsreader-latin-italic-variable.woff2') format('woff2');
+  font-style: italic;
+  font-weight: 200 800;
+  font-display: swap;
+}
+@font-face {
+  font-family: Manrope;
+  src: url('/fonts/manrope-latin-variable.woff2') format('woff2');
+  font-weight: 200 800;
+  font-display: swap;
+}
+
+:root {
+  --ground: #020204;
+  --surface: #0c0c10;
+  --raised: #16161d;
+  --text: #f5f1ea;
+  --muted: #b6afa6;
+  --faint: #7d7770;
+  --control: #4a453f;
+  --accent: #c8a27c;
+  --photo-accent: #c8a27c;
+  --reticle-accent: rgba(245, 241, 234, 0.48);
+  --negative: #dc9882;
+  --hairline: rgba(245, 241, 234, 0.09);
+  --dur-fast: 0.22s;
+  --dur-base: 0.48s;
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --font: Manrope, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  --brand: Newsreader, Georgia, serif;
+  --pad-x: clamp(20px, 3.4vw, 56px);
+  --pad-y: clamp(18px, 2.8vh, 38px);
+  --ink-shadow: 0 2px 16px rgba(0, 0, 0, 0.92), 0 0 4px rgba(0, 0, 0, 0.85);
+  font-family: var(--font);
+  font-synthesis: none;
+  font-optical-sizing: auto;
+  color: var(--text);
+  background: var(--ground);
+}
+
+::selection {
+  background: rgba(200, 162, 124, 0.28);
+  color: var(--text);
+}
+
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  overflow: hidden;
+  background: var(--ground);
+  -webkit-font-smoothing: antialiased;
+}
+button, input, a {
+  -webkit-tap-highlight-color: transparent;
+}
+button {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  border: 0;
+  background: transparent;
+  padding: 0;
+}
+button:disabled {
+  color: var(--control);
+  cursor: wait;
+}
+a {
+  color: inherit;
+  text-decoration: none;
+}
+button:focus-visible, a:focus-visible, input:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 5px;
+}
+[hidden] {
+  display: none !important;
+}
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+#app {
+  position: relative;
+  width: 100%;
+  height: 100svh;
+  min-height: 420px;
+  isolation: isolate;
+  overflow: hidden;
+  --timeline-progress: 0;
+}
+#scene {
+  position: absolute;
+  inset: 0;
+  touch-action: none;
+  cursor: grab;
+}
+#scene:active {
+  cursor: grabbing;
+}
+#scene canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  outline: none;
+}
+.export-locked #scene canvas {
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: contain;
+}
+
+/* Pure Borderless Typographic Link System (Zero Pills, Zero Boxes) */
+.text-link {
+  position: relative;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 6px 1px;
+  font-size: 11.5px;
+  font-weight: 400;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  background: transparent;
+  text-shadow: var(--ink-shadow);
+  transition: color var(--dur-fast) ease, opacity var(--dur-fast) ease;
+}
+.text-link::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 2px;
+  height: 1px;
+  background: var(--accent);
+  transform: scaleX(0);
+  transform-origin: right center;
+  transition: transform 0.36s var(--ease-out);
+}
+.text-link:hover,
+.text-link[aria-pressed='true'],
+.text-link[aria-current='true'] {
+  color: var(--text);
+}
+.text-link:hover::after,
+.text-link[aria-pressed='true']::after,
+.text-link[aria-current='true']::after {
+  transform: scaleX(1);
+  transform-origin: left center;
+}
+.text-link em {
+  font-family: var(--brand);
+  font-style: italic;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: var(--faint);
+}
+.accent-link {
+  color: var(--accent);
+}
+.muted-link {
+  color: var(--faint);
+}
+.hud-sep {
+  color: var(--control);
+  font-size: 11px;
+  user-select: none;
+  text-shadow: var(--ink-shadow);
+}
+
+/* Borderless Optical Viewfinder Reticle (Fine Desktop Pointer Only) */
+.cursor-reticle {
+  display: none;
+}
+@media (hover: hover) and (pointer: fine) {
+  .cursor-reticle {
+    display: block;
+    position: fixed;
+    top: 0;
+    left: 0;
+    z-index: 25;
+    width: 24px;
+    height: 24px;
+    margin: -12px 0 0 -12px;
+    pointer-events: none;
+    opacity: 0;
+    will-change: transform, opacity;
+    transition: opacity 0.28s var(--ease-out);
+  }
+  .cursor-reticle.visible {
+    opacity: 1;
+  }
+  .is-idle .cursor-reticle,
+  .focus-active .cursor-reticle,
+  .threshold-locked .cursor-reticle,
+  .recording-active .cursor-reticle,
+  .clean .cursor-reticle {
+    opacity: 0 !important;
+  }
+  .cursor-reticle .reticle-frame {
+    display: block;
+    width: 100%;
+    height: 100%;
+    border-radius: 50%;
+    border: 1px solid rgba(245, 241, 234, 0.22);
+    transition: transform 0.36s var(--ease-out), border-radius 0.36s var(--ease-out), border-color 0.24s ease;
+  }
+  .cursor-reticle[data-state='photo'] .reticle-frame {
+    transform: scale(1.55);
+    border-radius: 2px;
+    border-color: var(--reticle-accent);
+  }
+  .cursor-reticle[data-state='ui'] .reticle-frame {
+    transform: scale(0.45);
+    border-color: rgba(245, 241, 234, 0.12);
+  }
+  .reticle-tag {
+    position: absolute;
+    left: 28px;
+    top: 50%;
+    transform: translate3d(-6px, -50%, 0);
+    display: inline-flex;
+    align-items: baseline;
+    gap: 7px;
+    white-space: nowrap;
+    opacity: 0;
+    text-shadow: var(--ink-shadow);
+    transition: opacity 0.22s ease, transform 0.3s var(--ease-out);
+  }
+  .cursor-reticle[data-state='photo'] .reticle-tag {
+    opacity: 1;
+    transform: translate3d(0, -50%, 0);
+  }
+  .cursor-reticle[data-flip='left'] .reticle-tag {
+    left: auto;
+    right: 28px;
+  }
+  .reticle-dot {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--reticle-accent);
+    box-shadow: 0 0 8px var(--reticle-accent);
+    align-self: center;
+    flex: none;
+  }
+  .reticle-number {
+    font-family: var(--brand);
+    font-style: italic;
+    font-size: 12px;
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+  }
+  .reticle-label {
+    font-size: 10.5px;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+    max-width: 180px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+}

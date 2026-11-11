@@ -1,7 +1,27 @@
+# Dependencies & Build Output
 node_modules/
 dist/
+
+# IDE & OS Metadata
+.idea/
+*.iml
+.vscode/
+.DS_Store
+
+# Agent Scratch & Skill Caches
 .openai/
 .taste-skill/
-.DS_Store
+
+# Secrets & Local Env
+.env
+.env.*
+*.pem
+*.key
+*secret*
+*credentials*
+
+# Local Media & Social Deliverables (never commit multi-MB video renders)
 *.webm
 *.mp4
+*.mov
+抖音发布素材包/
