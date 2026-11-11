@@ -120,7 +120,7 @@ export function createFocusUiController({
 
   function showPhoto(index, instanceIndex = -1, flowDir = 1) {
     const { busy, universe, photos, validPhotoIndices } = getState();
-    if (busy || universe?.film) return;
+    if (busy || (universe?.film && !universe.film.interactive)) return;
     ensureThresholdDismissed();
     const position = validPhotoIndices.indexOf(index);
     if (position < 0) return;

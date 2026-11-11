@@ -8,13 +8,15 @@ const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
  */
 export const pointerPickingMethods = {
   beginPointer(event) {
-    if (this.film) return;
+    const filmLocked = Boolean(this.film && !this.film.interactive);
+    if (filmLocked) return;
     const pointers = (this.activePointers ||= new Map());
     pointers.set(event.pointerId, [event.clientX, event.clientY]);
-    if (this.scrollTimeline && pointers.size === 1) {
-      this.scrollTimeline.yawVel = 0;
-      this.scrollTimeline.pitchVel = 0;
-      this.scrollTimeline._lastDragAt = Number.isFinite(event.timeStamp) ? event.timeStamp : null;
+    const lookState = this.scrollTimeline || (this.film?.interactive ? this.film : null);
+    if (lookState && pointers.size === 1) {
+      lookState.yawVel = 0;
+      lookState.pitchVel = 0;
+      lookState._lastDragAt = Number.isFinite(event.timeStamp) ? event.timeStamp : null;
     }
     if (pointers.size === 1 && event.isPrimary !== false && (event.pointerType === 'touch' || event.button === 0)) {
       this.tapGesture = {
@@ -31,7 +33,8 @@ export const pointerPickingMethods = {
 
   movePointer(event) {
     const pointers = this.activePointers;
-    if (!pointers?.has(event.pointerId) || this.film) return;
+    const filmLocked = Boolean(this.film && !this.film.interactive);
+    if (!pointers?.has(event.pointerId) || filmLocked) return;
     const previous = pointers.get(event.pointerId);
     const dx = event.clientX - previous[0];
     const dy = event.clientY - previous[1];
@@ -44,29 +47,30 @@ export const pointerPickingMethods = {
     if (tap?.pointerId === event.pointerId) {
       tap.maxDistance = Math.max(tap.maxDistance, Math.hypot(event.clientX - tap.x, event.clientY - tap.y));
     }
-    if (pointers.size === 1 && !this.focusState && this.scrollTimeline && moved > 0.5) {
-      const st = this.scrollTimeline;
-      const inCorridor = st.currentTime >= 4.8 && st.currentTime <= 23.6;
+    const lookState = this.scrollTimeline || (this.film?.interactive ? this.film : null);
+    if (pointers.size === 1 && !this.focusState && lookState && moved > 0.5) {
+      const tNow = lookState.currentTime ?? lookState.elapsed ?? 0;
+      const inCorridor = tNow >= 4.8 && tNow <= 23.6;
       const dYaw = dx * 0.0035;
       const dPitch = dy * 0.0026;
-      st.targetYaw = inCorridor ? clamp(st.targetYaw + dYaw, -1.05, 1.05) : st.targetYaw + dYaw;
-      st.targetPitch = clamp(st.targetPitch + dPitch, -0.52, 0.52);
-      if (Number.isFinite(event.timeStamp) && st._lastDragAt !== null && st._lastDragAt !== undefined) {
-        const dtMs = event.timeStamp - st._lastDragAt;
+      lookState.targetYaw = inCorridor ? clamp((lookState.targetYaw || 0) + dYaw, -1.05, 1.05) : (lookState.targetYaw || 0) + dYaw;
+      lookState.targetPitch = clamp((lookState.targetPitch || 0) + dPitch, -0.52, 0.52);
+      if (Number.isFinite(event.timeStamp) && lookState._lastDragAt !== null && lookState._lastDragAt !== undefined) {
+        const dtMs = event.timeStamp - lookState._lastDragAt;
         if (dtMs >= 4 && dtMs <= 80) {
           const dtSec = dtMs / 1000;
-          st.yawVel = THREE.MathUtils.lerp(st.yawVel || 0, clamp(dYaw / dtSec, -4.5, 4.5), 0.45);
-          st.pitchVel = THREE.MathUtils.lerp(st.pitchVel || 0, clamp(dPitch / dtSec, -3.2, 3.2), 0.45);
+          lookState.yawVel = THREE.MathUtils.lerp(lookState.yawVel || 0, clamp(dYaw / dtSec, -4.5, 4.5), 0.45);
+          lookState.pitchVel = THREE.MathUtils.lerp(lookState.pitchVel || 0, clamp(dPitch / dtSec, -3.2, 3.2), 0.45);
         }
       }
-      if (Number.isFinite(event.timeStamp)) st._lastDragAt = event.timeStamp;
-      st.resting = false;
+      if (Number.isFinite(event.timeStamp)) lookState._lastDragAt = event.timeStamp;
+      if ('resting' in lookState) lookState.resting = false;
       if ((tap?.maxDistance || 0) > 6 || moved > 4) {
         this.dragging = true;
         if (this.renderer?.domElement?.style) this.renderer.domElement.style.cursor = 'grabbing';
       }
     }
-    if (!this.focusState && ((tap?.maxDistance > 6) || (pointers.size > 1 && moved > 0.5))) {
+    if (!this.focusState && !this.film && ((tap?.maxDistance > 6) || (pointers.size > 1 && moved > 0.5))) {
       this.claimManualView();
     }
   },
@@ -74,22 +78,23 @@ export const pointerPickingMethods = {
   endPointer(event, cancelled = false) {
     const pointers = this.activePointers;
     if (!pointers?.has(event.pointerId)) return false;
+    const filmLocked = Boolean(this.film && !this.film.interactive);
     const tap = this.tapGesture;
     const dx = tap?.pointerId === event.pointerId ? event.clientX - tap.x : 0;
     const dy = tap?.pointerId === event.pointerId ? event.clientY - tap.y : 0;
     if (tap?.pointerId === event.pointerId) {
       tap.maxDistance = Math.max(tap.maxDistance, Math.hypot(dx, dy));
     }
-    const picked = !cancelled && !this.film && pointers.size === 1 && tap?.pointerId === event.pointerId && !tap.blocked && tap.maxDistance <= 6;
-    const swipedInFocus = !cancelled && !this.film && Boolean(this.focusState) && pointers.size === 1 && tap?.pointerId === event.pointerId && Math.abs(dx) >= 44 && Math.abs(dx) > Math.abs(dy) * 1.4;
+    const picked = !cancelled && !filmLocked && pointers.size === 1 && tap?.pointerId === event.pointerId && !tap.blocked && tap.maxDistance <= 6;
+    const swipedInFocus = !cancelled && !filmLocked && Boolean(this.focusState) && pointers.size === 1 && tap?.pointerId === event.pointerId && Math.abs(dx) >= 44 && Math.abs(dx) > Math.abs(dy) * 1.4;
     pointers.delete(event.pointerId);
     if (cancelled && tap) tap.blocked = true;
     if (!pointers.size) {
       this.tapGesture = null;
-      if (this.scrollTimeline && this.dragging) {
+      if ((this.scrollTimeline || this.film?.interactive) && this.dragging) {
         this.dragging = false;
         if (this.renderer?.domElement?.style) {
-          this.renderer.domElement.style.cursor = this.film || this.focusState ? 'default' : 'grab';
+          this.renderer.domElement.style.cursor = filmLocked || this.focusState ? 'default' : 'grab';
         }
       }
     }
@@ -135,24 +140,26 @@ export const pointerPickingMethods = {
 
   clearHover() {
     const wasActive = Boolean(this.hoverActive);
+    const filmLocked = Boolean(this.film && !this.film.interactive);
     this.hoverPointer = null;
     this.hoverActive = false;
     this.hoveredInstanceKey = null;
     this._hoveredPhotoIndex = -1;
     if (this.renderer?.domElement) {
-      this.renderer.domElement.style.cursor = this.film || this.focusState ? 'default' : this.dragging ? 'grabbing' : 'grab';
+      this.renderer.domElement.style.cursor = filmLocked || this.focusState ? 'default' : this.dragging ? 'grabbing' : 'grab';
     }
     if (wasActive) this.callbacks?.onHoverStateChange?.({ active: false, photoIndex: -1 });
   },
 
   updateHover(time) {
     if (!this.renderer?.domElement) return;
-    if (!this.pointerEnabled || this.film || this.focusState || this.dragging || this.instanceDirty || !this.hoverPointer) {
+    const filmLocked = Boolean(this.film && !this.film.interactive);
+    if (!this.pointerEnabled || filmLocked || this.focusState || this.dragging || this.instanceDirty || !this.hoverPointer) {
       const wasActive = Boolean(this.hoverActive);
       this.hoverActive = false;
       this.hoveredInstanceKey = null;
       this._hoveredPhotoIndex = -1;
-      this.renderer.domElement.style.cursor = this.film || this.focusState ? 'default' : this.dragging ? 'grabbing' : 'grab';
+      this.renderer.domElement.style.cursor = filmLocked || this.focusState ? 'default' : this.dragging ? 'grabbing' : 'grab';
       if (wasActive) this.callbacks?.onHoverStateChange?.({ active: false, photoIndex: -1 });
       return;
     }

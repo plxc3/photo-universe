@@ -131,10 +131,10 @@ export function createCinemaExportController({
     if ($('gallery-dialog').open) closeDialogSmooth($('gallery-dialog'));
     if (universe.focusState) universe.closeFocus(true);
     scrubbingFilm = false;
-    syncFilmReadout(0);
     showFilmChrome(true);
     if (inspecting) startProfile();
-    universe.startFilm();
+    universe.startFilm({ fromCurrentScroll: !recorder, interactive: !recorder });
+    syncFilmReadout(universe.film?.elapsed || 0);
   }
 
   function endFilm() {

@@ -116,7 +116,8 @@ export class PhotoUniverse extends UniverseMixinBase {
     this.controls.addEventListener('end', () => {
       this.dragging = false;
       this.alignIdlePhase();
-      this.renderer.domElement.style.cursor = this.film || this.focusState ? 'default' : 'grab';
+      const filmLocked = Boolean(this.film && !this.film.interactive);
+      this.renderer.domElement.style.cursor = filmLocked || this.focusState ? 'default' : 'grab';
     });
     this.meshes = [];
     this.textures = [];
@@ -203,7 +204,8 @@ export class PhotoUniverse extends UniverseMixinBase {
     this.renderer.domElement.addEventListener('pointerdown', (event) => this.beginPointer(event));
     this.renderer.domElement.addEventListener('pointermove', (event) => {
       this.movePointer(event);
-      if (!this.pointerEnabled || this.dragging || this.film || event.buttons || event.pointerType === 'touch') return;
+      const filmLocked = Boolean(this.film && !this.film.interactive);
+      if (!this.pointerEnabled || this.dragging || filmLocked || event.buttons || event.pointerType === 'touch') return;
       const rect = this.renderer.domElement.getBoundingClientRect();
       const nx = clamp(((event.clientX - rect.left) / rect.width) * 2 - 1, -1, 1);
       const ny = clamp(((event.clientY - rect.top) / rect.height) * 2 - 1, -1, 1);
@@ -347,31 +349,23 @@ export class PhotoUniverse extends UniverseMixinBase {
     const { x, y } = restingViewFractions(this.camera.aspect);
     let fx = x;
     let fy = y;
-    if (this.film) {
+    if (this.film && !this.focusState) {
       const off = flightViewOffset(this.film.elapsed || 0, x, y, this.film.startOffset);
       fx = off.x;
       fy = off.y;
     } else if (this.scrollTimeline && !this.focusState) {
-      const off = flightViewOffset(
-        this.scrollTimeline.currentTime || 0,
-        x,
-        y,
-        this.scrollTimeline.startOffset,
-      );
+      const off = flightViewOffset(this.scrollTimeline.currentTime || 0, x, y, this.scrollTimeline.startOffset);
       fx = off.x;
       fy = off.y;
     } else if (this.mode === 'tunnel' || this.focusState || (this.thresholdState && !this.thresholdState.unlocking)) {
       fx = 0;
       fy = 0;
     }
-    if (this.viewTransition && !this.film) {
+    if (this.viewTransition) {
       const progress = easeInOut(this.viewTransition.elapsed / this.viewTransition.duration);
-      const from = this.viewTransition.fromOffset;
-      const to = this.viewTransition.toOffset;
-      const destX = to ? to.x : fx;
-      const destY = to ? to.y : fy;
-      fx = THREE.MathUtils.lerp(from.x, destX, progress);
-      fy = THREE.MathUtils.lerp(from.y, destY, progress);
+      const { fromOffset: from, toOffset: to } = this.viewTransition;
+      fx = THREE.MathUtils.lerp(from.x, to ? to.x : fx, progress);
+      fy = THREE.MathUtils.lerp(from.y, to ? to.y : fy, progress);
     } else if (!this.film && !this.focusState && !this.scrollTimeline && this.heldViewOffset) {
       fx = this.heldViewOffset.x;
       fy = this.heldViewOffset.y;
@@ -556,17 +550,11 @@ export class PhotoUniverse extends UniverseMixinBase {
     }
 
     if (options?.threshold && !this.reducedMotion && this.instances.length && this.mode === 'orbit' && !this.film) {
-      const restPos = new THREE.Vector3(...orbitPosition(this.camera.aspect));
-      const gatePos = restPos.clone().multiplyScalar(0.74);
-      this.thresholdState = {
-        active: true,
-        unlocking: false,
-        blur: 0.88,
-        elapsed: 0,
-        duration: 1.8,
-      };
-      this.reveal = null;
-      uniforms.uReveal.value = 1;
+      const gatePos = new THREE.Vector3(...orbitPosition(this.camera.aspect)).multiplyScalar(0.74);
+      this.thresholdState = { active: true, unlocking: false, blur: 0.88, elapsed: 0, duration: 1.8 };
+      uniforms.uReveal.value = 0;
+      this.reveal = { elapsed: 0, duration: 1.75 };
+      this._freshThresholdFrame = true;
       this.camera.position.copy(gatePos);
       this.camera.fov = 36;
       this.controls.target.set(0, 0, 0);
@@ -649,13 +637,11 @@ export class PhotoUniverse extends UniverseMixinBase {
     this.thresholdState.elapsed = 0;
     this.thresholdState.duration = 1.8;
     const restPos = new THREE.Vector3(...orbitPosition(this.camera.aspect));
-    const restQuat = new THREE.Quaternion().setFromEuler(
-      new THREE.Euler(...restRotation(this.camera.aspect)),
-    );
+    const restQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(...restRotation(this.camera.aspect)));
     const restOff = restingViewFractions(this.camera.aspect);
     const fromOff = this.camera.view?.enabled
       ? { x: this.camera.view.offsetX / this.camera.view.fullWidth, y: this.camera.view.offsetY / this.camera.view.fullHeight }
-      : restOff;
+      : { x: 0, y: 0 };
     this.viewTransition = {
       elapsed: 0,
       duration: 1.8,
@@ -726,7 +712,11 @@ export class PhotoUniverse extends UniverseMixinBase {
 
   animate(time) {
     const rawDeltaMs = time - this.lastTime;
-    const dt = Math.min(rawDeltaMs / 1000, 0.05);
+    let dt = rawDeltaMs > 0 ? Math.min(rawDeltaMs / 1000, 0.05) : 0;
+    if (this._freshThresholdFrame) {
+      this._freshThresholdFrame = false;
+      if (rawDeltaMs > 60) dt = 1 / 60;
+    }
     this.lastTime = time;
     if (document.hidden && !this.film) return;
 
@@ -744,12 +734,9 @@ export class PhotoUniverse extends UniverseMixinBase {
 
     if (this.thresholdState) {
       if (this.thresholdState.unlocking) {
-        this.thresholdState.elapsed = Math.min(
-          this.thresholdState.duration,
-          this.thresholdState.elapsed + dt,
-        );
+        this.thresholdState.elapsed = Math.min(this.thresholdState.duration, this.thresholdState.elapsed + dt);
         const p = clamp(this.thresholdState.elapsed / Math.max(1e-6, this.thresholdState.duration), 0, 1);
-        this.thresholdState.blur = 0.88 * Math.pow(1 - p, 2.8);
+        this.thresholdState.blur = 0.88 * (1 - easeInOut(p));
         if (this.thresholdState.elapsed >= this.thresholdState.duration) {
           this.thresholdState = null;
           if (this.controls && !this.film && !this.focusState && !this.scrollTimeline) {
@@ -764,8 +751,9 @@ export class PhotoUniverse extends UniverseMixinBase {
     const camBefore = (this._camBefore ||= new THREE.Vector3()).copy(this.camera.position);
     const targetBefore = (this._targetBefore ||= new THREE.Vector3()).copy(this.controls.target);
     const fovBefore = this.camera.fov;
+    const filmLocked = Boolean(this.film && !this.film.interactive);
 
-    if (this.film) {
+    if (this.film && !this.focusState && !this.viewTransition) {
       if (!this.film.manual) this.updateFilm(time);
       this._idleVelScale = 0;
     } else if (this.scrollTimeline && !this.focusState && !this.viewTransition) {
@@ -802,29 +790,27 @@ export class PhotoUniverse extends UniverseMixinBase {
         this.applyViewOffset();
         if (view.elapsed === view.duration) {
           this.viewTransition = null;
-          if (!this.focusState && !allowIdleDuringView) this.alignIdlePhase();
+          if (this.film?.focusPaused && !this.focusState) {
+            this.film.focusPaused = false;
+            this.film.start = time - (this.film.elapsed || 0) * 1000;
+            this.film.lastUpdateTime = time;
+          } else if (!this.focusState && !allowIdleDuringView && !this.film) {
+            this.alignIdlePhase();
+          }
         }
       }
 
       // Yield idle spin smoothly while dragging so manual inspection never fights the gyroscope
       const canSpinIdle = this.running
-        && !this.dragging
-        && !this.focusState
-        && !this._closingPlate
+        && !this.dragging && !this.film && !this.focusState && !this._closingPlate
         && (!this.viewTransition || allowIdleDuringView);
       const targetVelScale = canSpinIdle ? 1 : 0;
       const idleRate = canSpinIdle ? 2.8 : 8.5;
       this._idleVelScale = this.reducedMotion
         ? targetVelScale
-        : THREE.MathUtils.lerp(
-          this._idleVelScale ?? (canSpinIdle && !allowIdleDuringView ? 1 : 0),
-          targetVelScale,
-          1 - Math.exp(-dt * idleRate),
-        );
+        : THREE.MathUtils.lerp(this._idleVelScale ?? (canSpinIdle && !allowIdleDuringView ? 1 : 0), targetVelScale, 1 - Math.exp(-dt * idleRate));
 
-      const spinPermitted = this.running
-        && !this.focusState
-        && !this._closingPlate
+      const spinPermitted = this.running && !this.film && !this.focusState && !this._closingPlate
         && (!this.viewTransition || allowIdleDuringView);
       if (spinPermitted && this._idleVelScale > 1e-4) {
         const dtSpin = dt * this.speed * this._idleVelScale;
@@ -843,37 +829,29 @@ export class PhotoUniverse extends UniverseMixinBase {
           }
         }
       }
-      if (!this.focusState && !this.scrollTimeline) this.controls.update();
+      if (!this.focusState && !this.scrollTimeline && !this.film) this.controls.update();
     }
 
     if (dt > 1e-4 && rawDeltaMs > 0) {
       const invDt = 1 / dt;
-      const camVel = (this._camVel ||= new THREE.Vector3())
-        .subVectors(this.camera.position, camBefore)
-        .multiplyScalar(invDt);
+      const camVel = (this._camVel ||= new THREE.Vector3()).subVectors(this.camera.position, camBefore).multiplyScalar(invDt);
       if (camVel.lengthSq() > 14400) camVel.setLength(120);
-      const targetVel = (this._targetVel ||= new THREE.Vector3())
-        .subVectors(this.controls.target, targetBefore)
-        .multiplyScalar(invDt);
+      const targetVel = (this._targetVel ||= new THREE.Vector3()).subVectors(this.controls.target, targetBefore).multiplyScalar(invDt);
       if (targetVel.lengthSq() > 14400) targetVel.setLength(120);
       this._fovVel = clamp((this.camera.fov - fovBefore) * invDt, -90, 90);
     }
 
     if (this.parallaxGroup) {
-      const allowed = this.pointerEnabled && !this.reducedMotion && !this.dragging && !this.film && !this.focusState;
+      const allowed = this.pointerEnabled && !this.reducedMotion && !this.dragging && !filmLocked && !this.focusState;
       if (!allowed) this.pointerTarget.set(0, 0);
-      if (this.reducedMotion || this.film) {
+      if (this.reducedMotion || filmLocked) {
         this.pointerCurrent.set(0, 0);
         this._dragBankTarget = 0;
         this._dragBankCurrent = 0;
       } else {
         this.pointerCurrent.lerp(this.pointerTarget, 1 - Math.exp(-dt * 5));
         this._dragBankTarget = (this._dragBankTarget || 0) * Math.exp(-dt * 7.5);
-        this._dragBankCurrent = THREE.MathUtils.lerp(
-          this._dragBankCurrent || 0,
-          this._dragBankTarget,
-          1 - Math.exp(-dt * 9),
-        );
+        this._dragBankCurrent = THREE.MathUtils.lerp(this._dragBankCurrent || 0, this._dragBankTarget, 1 - Math.exp(-dt * 9));
       }
       const strength = this.camera.aspect < 0.85 ? 0.005 : 0.016;
       this.parallaxGroup.rotation.set(
@@ -898,7 +876,7 @@ export class PhotoUniverse extends UniverseMixinBase {
         ? targetFocus
         : THREE.MathUtils.lerp(uniforms.uFocusAmount.value, targetFocus, 1 - Math.exp(-dt * 5.5));
 
-      const targetHover = this.hoverActive && !this.focusState && !this.film ? 1 : 0;
+      const targetHover = this.hoverActive && !this.focusState && !filmLocked ? 1 : 0;
       uniforms.uHoverStrength.value = this.reducedMotion
         ? 0
         : THREE.MathUtils.lerp(uniforms.uHoverStrength.value, targetHover, 1 - Math.exp(-dt * 10));

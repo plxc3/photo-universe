@@ -24,11 +24,58 @@ function wrapSignedPi(angle) {
  * blends look-around continuously across orbit <-> tunnel boundaries, and supports coasting drag inertia.
  */
 export const scrollTheatreMethods = {
-  startFilm() {
+  startFilm({ fromCurrentScroll = false, interactive = false } = {}) {
     if (this.film) return;
     if (this.focusState) this.closeFocus(true);
-    if (this.scrollTimeline) this.exitScrollTimeline(false);
     this.thresholdState = null;
+    const allowInteract = Boolean(interactive && !this.exportResolution);
+    if (
+      fromCurrentScroll
+      && this.scrollTimeline
+      && this.scrollTimeline.currentTime > 0.15
+      && this.scrollTimeline.currentTime < FILM.total - 1.0
+    ) {
+      const st = this.scrollTimeline;
+      const startAt = st.currentTime;
+      this.scrollTimeline = null;
+      this.dragging = false;
+      this.clearHover();
+      this.activePointers?.clear();
+      this.tapGesture = null;
+      this.heldViewOffset = null;
+      this.viewTransition = null;
+      this.controls.enabled = false;
+      this.pointerTarget?.set(0, 0);
+      this.film = {
+        start: performance.now() - startAt * 1000,
+        phase: this.mode === 'tunnel' ? 'tunnel' : 'orbit',
+        elapsed: startAt,
+        interactive: allowInteract,
+        startPose: st.startPose,
+        startRingAngles: st.startRingAngles,
+        startOffset: st.startOffset,
+        lookYaw: st.lookYaw || 0,
+        lookPitch: st.lookPitch || 0,
+        targetYaw: st.targetYaw || 0,
+        targetPitch: st.targetPitch || 0,
+        yawVel: st.yawVel || 0,
+        pitchVel: st.pitchVel || 0,
+        lastUpdateTime: null,
+        focusPaused: false,
+      };
+      if (this.morph?.scrollControlled) {
+        this.morph.scrollControlled = false;
+        this.morph.filmStart = startAt < FILM.reassemble ? FILM.phase1 : FILM.reassemble;
+      }
+      if (this.photoUniforms) this.photoUniforms.uReveal.value = 1;
+      this.reveal = null;
+      if (this.renderer?.domElement?.style) {
+        this.renderer.domElement.style.cursor = allowInteract ? 'grab' : 'default';
+      }
+      this.callbacks.onFilmProgress?.(startAt);
+      return;
+    }
+    if (this.scrollTimeline) this.exitScrollTimeline(false);
     this.flushDamping();
     if (this.parallaxGroup) {
       this.group.quaternion.premultiply(this.parallaxGroup.quaternion);
@@ -49,12 +96,21 @@ export const scrollTheatreMethods = {
       start: performance.now(),
       phase: 'orbit',
       elapsed: 0,
+      interactive: allowInteract,
       startPose,
       startRingAngles,
       startOffset: {
         x: view?.enabled ? view.offsetX / view.fullWidth : 0,
         y: view?.enabled ? view.offsetY / view.fullHeight : 0,
       },
+      lookYaw: 0,
+      lookPitch: 0,
+      targetYaw: 0,
+      targetPitch: 0,
+      yawVel: 0,
+      pitchVel: 0,
+      lastUpdateTime: null,
+      focusPaused: false,
     };
     this.clearHover();
     this.activePointers?.clear();
@@ -77,6 +133,7 @@ export const scrollTheatreMethods = {
       if (reset) this.resetView(false);
       return;
     }
+    if (this.focusState) this.closeFocus(true, notify);
     const natural = this.film.natural === true;
     const view = this.camera.view;
     const offset = {
@@ -106,12 +163,15 @@ export const scrollTheatreMethods = {
   },
 
   seekFilmLive(seconds, { paused = false } = {}) {
+    if (this.focusState) this.closeFocus(true);
     const target = clamp(Number(seconds) || 0, 0, FILM.total - 0.001);
-    if (!this.film) this.startFilm();
+    if (!this.film) this.startFilm({ interactive: !this.exportResolution });
     const now = performance.now();
     this.film.start = now - target * 1000;
     this.film.elapsed = target;
     this.film.scrubPaused = Boolean(paused);
+    this.film.focusPaused = false;
+    this.film.lastUpdateTime = null;
     this.film.manual = false;
 
     const sample = sampleFlight(target, this.camera.aspect, this.film.startPose);
@@ -119,8 +179,9 @@ export const scrollTheatreMethods = {
     this.camera.up.fromArray(sample.up);
     this.camera.fov = sample.fov;
     this.controls.target.fromArray(sample.target);
-    this.camera.lookAt(this.controls.target);
     this.group.rotation.set(sample.rotation[0], sample.rotation[1], sample.rotation[2]);
+    this._applyTheatreLookOffset(this.film, target, 0, false);
+    this.camera.lookAt(this.controls.target);
 
     let formationStart = null;
     let duration = 2.2;
@@ -183,11 +244,20 @@ export const scrollTheatreMethods = {
     let handedStartPose = null;
     let handedRingAngles = null;
     let handedOffset = null;
+    let handedLook = null;
     if (this.film) {
       const filmTime = this.film.elapsed || 0;
       handedStartPose = this.film.startPose;
       handedRingAngles = this.film.startRingAngles;
       handedOffset = this.film.startOffset;
+      handedLook = {
+        lookYaw: this.film.lookYaw || 0,
+        lookPitch: this.film.lookPitch || 0,
+        targetYaw: this.film.targetYaw || 0,
+        targetPitch: this.film.targetPitch || 0,
+        yawVel: this.film.yawVel || 0,
+        pitchVel: this.film.pitchVel || 0,
+      };
       this.stopFilm(false, false);
       if (seconds === undefined) seconds = filmTime;
     }
@@ -241,12 +311,12 @@ export const scrollTheatreMethods = {
         startRingAngles,
         startOffset,
         entryMode,
-        lookYaw: 0,
-        lookPitch: 0,
-        targetYaw: 0,
-        targetPitch: 0,
-        yawVel: 0,
-        pitchVel: 0,
+        lookYaw: handedLook ? handedLook.lookYaw : 0,
+        lookPitch: handedLook ? handedLook.lookPitch : 0,
+        targetYaw: handedLook ? handedLook.targetYaw : 0,
+        targetPitch: handedLook ? handedLook.targetPitch : 0,
+        yawVel: handedLook ? handedLook.yawVel : 0,
+        pitchVel: handedLook ? handedLook.pitchVel : 0,
         region: null,
         resting: false,
       };
@@ -333,55 +403,7 @@ export const scrollTheatreMethods = {
     this.controls.target.fromArray(s.target);
     this.group.rotation.set(s.rotation[0], s.rotation[1], s.rotation[2]);
 
-    if (dt > 0 && !this.reducedMotion && !this.dragging) {
-      if (Math.abs(st.yawVel || 0) > 1e-4 || Math.abs(st.pitchVel || 0) > 1e-4) {
-        const inCorridor = target >= 4.8 && target <= 23.6;
-        st.targetYaw += (st.yawVel || 0) * dt;
-        if (inCorridor) st.targetYaw = clamp(st.targetYaw, -1.05, 1.05);
-        st.targetPitch = clamp(st.targetPitch + (st.pitchVel || 0) * dt, -0.52, 0.52);
-        const dragDecay = Math.exp(-dt * 7.5);
-        st.yawVel *= dragDecay;
-        st.pitchVel *= dragDecay;
-        if (Math.abs(st.yawVel) < 1e-3) st.yawVel = 0;
-        if (Math.abs(st.pitchVel) < 1e-3) st.pitchVel = 0;
-      }
-    }
-
-    const blend = dt > 0 && !this.reducedMotion ? 1 - Math.exp(-dt * 12) : 1;
-    st.lookYaw = THREE.MathUtils.lerp(st.lookYaw, st.targetYaw, blend);
-    st.lookPitch = THREE.MathUtils.lerp(st.lookPitch, st.targetPitch, blend);
-
-    // Smoothly blend look-around between crystal orbit rotation and corridor camera pan
-    // so crossing t = 5.5s or t = 22.7s never jumps the viewport.
-    if (Math.abs(st.lookYaw) > 1e-5 || Math.abs(st.lookPitch) > 1e-5) {
-      const enterTunnel = easeInOut(clamp((target - 4.6) / 1.8, 0, 1));
-      const exitTunnel = easeInOut(clamp((target - 22.0) / 1.8, 0, 1));
-      const tunnelWeight = enterTunnel * (1 - exitTunnel);
-      const orbitWeight = 1 - tunnelWeight;
-
-      if (orbitWeight > 1e-4) {
-        const orbitLook = (this._scrollOrbitLookQuat ||= new THREE.Quaternion()).setFromEuler(
-          (this._scrollLookEuler ||= new THREE.Euler()).set(
-            st.lookPitch * orbitWeight,
-            st.lookYaw * orbitWeight,
-            0,
-            'YXZ',
-          ),
-        );
-        this.group.quaternion.premultiply(orbitLook);
-      }
-      if (tunnelWeight > 1e-4) {
-        const tunnelYaw = clamp(st.lookYaw, -1.05, 1.05) * tunnelWeight;
-        const tunnelPitch = st.lookPitch * tunnelWeight;
-        const tunnelLook = (this._scrollLookQuat ||= new THREE.Quaternion()).setFromEuler(
-          (this._scrollTunnelEuler ||= new THREE.Euler()).set(tunnelPitch, tunnelYaw, 0, 'YXZ'),
-        );
-        const dir = (this._scrollLookDir ||= new THREE.Vector3())
-          .subVectors(this.controls.target, this.camera.position)
-          .applyQuaternion(tunnelLook);
-        this.controls.target.copy(this.camera.position).add(dir);
-      }
-    }
+    this._applyTheatreLookOffset(st, target, dt, false);
 
     this.camera.lookAt(this.controls.target);
     this.camera.updateProjectionMatrix();
@@ -442,11 +464,89 @@ export const scrollTheatreMethods = {
     }
   },
 
+  _applyTheatreLookOffset(state, target, dt = 0, autoRecenter = false) {
+    if (!state) return;
+    const hasActivity = Math.abs(state.lookYaw || 0) > 1e-5
+      || Math.abs(state.lookPitch || 0) > 1e-5
+      || Math.abs(state.targetYaw || 0) > 1e-5
+      || Math.abs(state.targetPitch || 0) > 1e-5
+      || Math.abs(state.yawVel || 0) > 1e-5
+      || Math.abs(state.pitchVel || 0) > 1e-5;
+    if (!hasActivity) return;
+
+    if (dt > 0 && !this.reducedMotion && !this.dragging) {
+      const inCorridor = target >= 4.8 && target <= 23.6;
+      if (Math.abs(state.yawVel || 0) > 1e-4 || Math.abs(state.pitchVel || 0) > 1e-4) {
+        state.targetYaw += (state.yawVel || 0) * dt;
+        if (inCorridor) state.targetYaw = clamp(state.targetYaw, -1.05, 1.05);
+        state.targetPitch = clamp(state.targetPitch + (state.pitchVel || 0) * dt, -0.52, 0.52);
+        const dragDecay = Math.exp(-dt * 7.5);
+        state.yawVel *= dragDecay;
+        state.pitchVel *= dragDecay;
+        if (Math.abs(state.yawVel) < 1e-3) state.yawVel = 0;
+        if (Math.abs(state.pitchVel) < 1e-3) state.pitchVel = 0;
+      }
+      if (autoRecenter && Math.abs(state.yawVel || 0) < 0.08 && Math.abs(state.pitchVel || 0) < 0.08) {
+        const settleRate = target >= FILM.total - 1.8 ? 4.2 : 0.55;
+        state.targetPitch *= Math.exp(-dt * settleRate);
+        if (target > 4.2 && target < 24.4) {
+          state.targetYaw *= Math.exp(-dt * 0.48);
+        } else if (target >= FILM.total - 1.8) {
+          state.targetYaw *= Math.exp(-dt * 4.2);
+        }
+        if (Math.abs(state.targetPitch) < 1e-4) state.targetPitch = 0;
+        if (Math.abs(state.targetYaw) < 1e-4) state.targetYaw = 0;
+      }
+    }
+
+    const blend = dt > 0 && !this.reducedMotion ? 1 - Math.exp(-dt * 12) : 1;
+    state.lookYaw = THREE.MathUtils.lerp(state.lookYaw || 0, state.targetYaw || 0, blend);
+    state.lookPitch = THREE.MathUtils.lerp(state.lookPitch || 0, state.targetPitch || 0, blend);
+
+    // Smoothly blend look-around between crystal orbit rotation and corridor camera pan
+    // so crossing t = 5.5s or t = 22.7s never jumps the viewport.
+    if (Math.abs(state.lookYaw) > 1e-5 || Math.abs(state.lookPitch) > 1e-5) {
+      const enterTunnel = easeInOut(clamp((target - 4.6) / 1.8, 0, 1));
+      const exitTunnel = easeInOut(clamp((target - 22.0) / 1.8, 0, 1));
+      const tunnelWeight = enterTunnel * (1 - exitTunnel);
+      const orbitWeight = 1 - tunnelWeight;
+
+      if (orbitWeight > 1e-4) {
+        const orbitLook = (this._scrollOrbitLookQuat ||= new THREE.Quaternion()).setFromEuler(
+          (this._scrollLookEuler ||= new THREE.Euler()).set(
+            state.lookPitch * orbitWeight,
+            state.lookYaw * orbitWeight,
+            0,
+            'YXZ',
+          ),
+        );
+        this.group.quaternion.premultiply(orbitLook);
+      }
+      if (tunnelWeight > 1e-4) {
+        const tunnelYaw = clamp(state.lookYaw, -1.05, 1.05) * tunnelWeight;
+        const tunnelPitch = state.lookPitch * tunnelWeight;
+        const tunnelLook = (this._scrollLookQuat ||= new THREE.Quaternion()).setFromEuler(
+          (this._scrollTunnelEuler ||= new THREE.Euler()).set(tunnelPitch, tunnelYaw, 0, 'YXZ'),
+        );
+        const dir = (this._scrollLookDir ||= new THREE.Vector3())
+          .subVectors(this.controls.target, this.camera.position)
+          .applyQuaternion(tunnelLook);
+        this.controls.target.copy(this.camera.position).add(dir);
+      }
+    }
+  },
+
   updateFilm(time) {
-    if (this.film.scrubPaused) {
+    if (this.film.scrubPaused || this.film.focusPaused) {
       this.film.start = time - (this.film.elapsed || 0) * 1000;
+      this.film.lastUpdateTime = time;
       return;
     }
+    const prevTime = this.film.lastUpdateTime;
+    const dt = prevTime !== null && prevTime !== undefined && Number.isFinite(time - prevTime)
+      ? clamp((time - prevTime) / 1000, 0, 0.05)
+      : 0;
+    this.film.lastUpdateTime = time;
     const elapsed = clamp((time - this.film.start) / 1000, 0, FILM.total);
     this.film.elapsed = elapsed;
     const s = sampleFlight(elapsed, this.camera.aspect, this.film.startPose);
@@ -454,8 +554,9 @@ export const scrollTheatreMethods = {
     this.camera.up.fromArray(s.up);
     this.camera.fov = s.fov;
     this.controls.target.fromArray(s.target);
-    this.camera.lookAt(this.controls.target);
     this.group.rotation.set(s.rotation[0], s.rotation[1], s.rotation[2]);
+    this._applyTheatreLookOffset(this.film, elapsed, dt, true);
+    this.camera.lookAt(this.controls.target);
     this.camera.updateProjectionMatrix();
     this.applyViewOffset();
     if (this.film.phase !== s.mode) {

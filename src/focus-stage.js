@@ -146,12 +146,16 @@ export const focusStageMethods = {
   },
 
   focusPhoto(photoIndex, preferredInstanceIndex = -1, options = {}) {
-    if (this.film || !this.instances.length) return false;
+    if ((this.film && !this.film.interactive) || !this.instances.length) return false;
     const instanceIndex = this._findBestInstanceForPhoto(photoIndex, preferredInstanceIndex);
     if (instanceIndex < 0) return false;
 
     this._disposeClosingPlate();
     this.thresholdState = null;
+    if (this.film?.interactive && !this.focusState) {
+      this.film.focusPaused = true;
+      this.film.lastUpdateTime = null;
+    }
     this.flushDamping();
     if (this.parallaxGroup) {
       this.pointerTarget?.set(0, 0);
@@ -163,6 +167,8 @@ export const focusStageMethods = {
           this.scrollTimeline.timeVel = 0;
           this.scrollTimeline.resting = true;
         }
+        this.updateInstanceTransforms(0);
+      } else if (this.film && Number.isFinite(this.morph?.filmStart)) {
         this.updateInstanceTransforms(0);
       } else {
         for (const instance of this.instances) {
@@ -565,7 +571,7 @@ export const focusStageMethods = {
       this._disposeFocusPlate();
     }
 
-    this.controls.enabled = !this.scrollTimeline;
+    this.controls.enabled = !this.scrollTimeline && !this.film;
     this.defaultView = saved.defaultView;
     this.heldViewOffset = saved.heldViewOffset;
     this.running = saved.running;
@@ -579,11 +585,17 @@ export const focusStageMethods = {
       this.viewTransition = null;
       this._zeroCameraVelocity?.();
       uniforms.uFocusAmount.value = 0;
-      this.alignIdlePhase();
+      if (this.film?.focusPaused) {
+        this.film.focusPaused = false;
+        this.film.start = performance.now() - (this.film.elapsed || 0) * 1000;
+        this.film.lastUpdateTime = null;
+      } else if (!this.film) {
+        this.alignIdlePhase();
+      }
     } else {
       this.viewTransition = {
         elapsed: 0,
-        duration: 0.92,
+        duration: this.film ? 0.68 : 0.92,
         fromPosition: this.camera.position.clone(),
         position: saved.position.clone(),
         fromTarget: this.controls.target.clone(),

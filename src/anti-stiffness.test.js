@@ -222,6 +222,93 @@ test('createWheelStepGate collapses MacBook trackpad inertia bursts into 1 step 
   assert.equal(gate(-26, t2 + 30, 0), -1, 'second deliberate finger flick spike triggers cleanly');
 });
 
+test('Threshold entry fades in uReveal from 0 and unlockThreshold interpolates viewOffset from {0,0} with zero Frame-1 snap', () => {
+  const O = makeHarness(1440, 900);
+  const photos = Array.from({ length: 12 }, (_, i) => ({
+    index: i,
+    spectralKey: i / 12,
+    width: 1200,
+    height: 800,
+  }));
+  const atlases = [{
+    canvas: { width: 1024, height: 1024 },
+    photoIndices: Array.from({ length: 12 }, (_, i) => i),
+  }];
+  O.setPhotos(photos, atlases, 120, { genesis: true, threshold: true });
+
+  assert.equal(O.photoUniforms.uReveal.value, 0, 'Threshold entry starts uReveal at 0 for silver-halide exposure fade-in');
+  assert.equal(Boolean(O.camera.view?.enabled), false, 'Threshold gate clears projection viewOffset');
+
+  // Unlocking threshold must start viewTransition.fromOffset at {0,0} (not resting offset -0.026)
+  assert.equal(O.unlockThreshold(), true);
+  assert.deepEqual(O.viewTransition.fromOffset, { x: 0, y: 0 }, 'zero Frame-1 projection snap on unlockThreshold');
+
+  O.animate(16);
+  const offsetYFrame1 = O.camera.view?.enabled ? Math.abs(O.camera.view.offsetY) : 0;
+  assert.ok(offsetYFrame1 < 0.25, `Frame-1 offsetY after unlock must ease smoothly from 0 (got ${offsetYFrame1}px)`);
+  O.clearPhotos();
+});
+
+test('Interactive 30s Film voyage supports drag look-around, card click FLIP inspection pause, and seamless resume on close', () => {
+  const O = makeHarness(1440, 900);
+  const photos = Array.from({ length: 12 }, (_, i) => ({
+    index: i,
+    spectralKey: i / 12,
+    width: 1200,
+    height: 800,
+  }));
+  const atlases = [{
+    canvas: { width: 1024, height: 1024 },
+    photoIndices: Array.from({ length: 12 }, (_, i) => i),
+  }];
+  O.setPhotos(photos, atlases, 120, { genesis: false });
+
+  O.startFilm({ interactive: true });
+  assert.equal(O.film.interactive, true);
+  assert.equal(O.renderer.domElement.style.cursor, 'grab');
+
+  // Advance film to t = 2.0s
+  const startPerf = O.film.start;
+  O.animate(startPerf + 2000);
+  assert.ok(Math.abs(O.film.elapsed - 2.0) < 0.05);
+
+  // Dragging during interactive film updates targetYaw/targetPitch and coasting inertia
+  O.beginPointer({ pointerId: 1, clientX: 500, clientY: 450, button: 0, pointerType: 'mouse', timeStamp: 2000 });
+  O.movePointer({ pointerId: 1, clientX: 720, clientY: 410, timeStamp: 2016 });
+  O.movePointer({ pointerId: 1, clientX: 920, clientY: 380, timeStamp: 2032 });
+  O.endPointer({ pointerId: 1, clientX: 920, clientY: 380, timeStamp: 2032 });
+  assert.ok(O.film.targetYaw > 0.4, 'interactive film allows live drag look-around');
+  assert.ok(O.film.yawVel > 0.4, 'interactive film captures release inertia');
+
+  O.animate(startPerf + 2050);
+  const pausedAt = O.film.elapsed;
+
+  // Clicking a passing photograph opens 3D FLIP exhibition and pauses film at exact elapsed
+  assert.equal(O.focusPhoto(0, 0), true, 'focusPhoto succeeds during interactive film');
+  assert.equal(O.film.focusPaused, true, 'film pauses cleanly while inspecting focused photograph');
+
+  // Even 3 seconds later in wall-clock time while inspecting, film.elapsed remains frozen
+  for (let ms = 2100; ms <= 5100; ms += 50) O.animate(startPerf + ms);
+  assert.equal(O.film.elapsed, pausedAt, 'film timeline remains frozen throughout focus inspection');
+
+  // Closing focus glides camera back over 0.68s viewTransition and seamlessly resumes film from pausedAt
+  assert.equal(O.closeFocus(false), true);
+  assert.ok(O.viewTransition, 'closeFocus launches smooth return viewTransition');
+  for (let ms = 5150; ms <= 5800; ms += 50) O.animate(startPerf + ms);
+
+  assert.equal(O.viewTransition, null, 'return viewTransition finishes cleanly');
+  assert.equal(O.film.focusPaused, false, 'film automatically unpauses upon return');
+
+  // Next 100ms frame advances film smoothly from pausedAt (~2.05s) instead of jumping to 5.90s!
+  O.animate(startPerf + 5900);
+  assert.ok(
+    O.film.elapsed > pausedAt + 0.05 && O.film.elapsed < pausedAt + 0.25,
+    `film resumes seamlessly from pausedAt=${pausedAt.toFixed(2)}s without wall-clock jump (got ${O.film.elapsed.toFixed(2)}s)`,
+  );
+  O.stopFilm(false, false);
+  O.clearPhotos();
+});
+
 test('AI engineering modularity gate: every runtime JS and CSS file in src/ stays strictly below 1,000 lines', async () => {
   const srcRoot = new URL('./', import.meta.url);
   const checkDir = async (dirUrl, prefix = '') => {

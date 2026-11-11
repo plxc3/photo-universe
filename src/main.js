@@ -141,7 +141,11 @@ function syncFilmReadout(seconds) {
   const actIdx = actIndexForTime(clamped);
   if ($('act-roman')) $('act-roman').textContent = ROMAN_ACTS[actIdx];
   $('film-act').textContent = actLabelForTime(clamped);
-  $('film-time').textContent = '00:' + String(Math.floor(clamped)).padStart(2, '0') + ' / 00:30';
+  const timeText = '00:' + String(Math.floor(clamped)).padStart(2, '0') + ' / 00:30';
+  const liveInteractive = Boolean(universe?.film?.interactive && !filmExport?.isRecording?.());
+  $('film-time').textContent = liveInteractive
+    ? timeText + (coarsePointerQuery.matches ? ' · 可拖动 · 点按' : ' · 拖拽环视 · 点按凝视')
+    : timeText;
   $('film-progress').value = clamped;
   const ratio = Math.max(0, Math.min(1, clamped / 29.65));
   $('app').style.setProperty('--timeline-progress', ratio.toFixed(4));
@@ -388,6 +392,7 @@ async function importPhotos(files, options = {}) {
   let pendingPhotos;
   let pendingAtlases;
   let enteredThresholdGate = false;
+  const bootStart = performance.now();
   try {
     $('loading-text').textContent = files ? '正在整理相册' : '正在凝聚馆藏';
     $('loading-progress').value = 0;
@@ -452,6 +457,11 @@ async function importPhotos(files, options = {}) {
     if (shouldHoldAtThreshold) {
       enteredThresholdGate = true;
       $('app').classList.add('threshold-locked');
+      const minBootMs = debugEnabled ? 0 : 420;
+      const waitMs = minBootMs - (performance.now() - bootStart);
+      if (waitMs > 16) await new Promise((resolve) => setTimeout(resolve, waitMs));
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      if (pageDisposed) return;
       loader.dataset.phase = 'threshold';
     } else {
       thresholdDismissed = true;
@@ -518,7 +528,7 @@ function togglePlaying() {
 }
 
 function toggleClean() {
-  if (universe?.film || universe?.focusState) return;
+  if (filmExport.isRecording() || universe?.focusState) return;
   if ($('gallery-dialog').open) closeDialogSmooth($('gallery-dialog'));
   const clean = $('app').classList.toggle('clean');
   $('restore-ui').hidden = !clean;
