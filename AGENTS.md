@@ -5,20 +5,21 @@
 本项目同时遵循父工作区 `/Users/pc/IdeaProjects/AGENTS.md` 的核心纪律：
 - **零构建污染与零大文件入库**：本地音视频成片（`*.mp4`、`*.webm`、`抖音发布素材包/`）、IDE 配置（`.idea/`、`.vscode/`）及敏感凭证严禁提交 Git。
 - **单文件轻量模块化边界**：每个业务 JS / CSS 源文件严格保持单一职责（`< 1,000` 行，单次上下文窗口完整可读），禁止退化回单体巨石文件。
-- **统一验证门禁**：任何修改完成后，必须通过 `npm run check`（全量测试 + Vite 分包生产构建）。
+- **统一验证门禁**：任何修改完成后，必须通过 `npm run check`（零运行时膨胀 TypeScript 静态类型检查 + 全量单元测试 + Vite 分包生产构建）。
 
 ---
 
 ## 1. 环境与标准命令
 
-- **运行环境**：Node.js `>= 20`（推荐 Node.js `22`），**零第三方 UI 框架膨胀**（仅 `three` 运行时依赖 + `vite` 构建工具），无需后端或 API Key。
+- **运行环境**：Node.js `>= 20`（推荐 Node.js `22`），**零第三方 UI 框架膨胀**（运行时仅 `three` 单一依赖；开发期配备 `vite` 与 `typescript` + `@types/three` 静态类型门禁），无需后端或 API Key。
 - **常用命令**：
   ```bash
   npm install
-  npm run dev      # 启动本地开发服务 http://127.0.0.1:5178/
-  npm test         # 运行 Node 原生单元测试套件（src/*.test.js）
-  npm run build    # Vite 生产分包构建（three 独立 vendor chunk + 业务轻包）
-  npm run check    # 合并/提交前强制门禁：npm test && npm run build
+  npm run dev        # 启动本地开发服务 http://127.0.0.1:5178/
+  npm run typecheck  # 运行零运行时开销的 TypeScript 静态类型门禁（tsc --noEmit）
+  npm test           # 运行 Node 原生单元测试套件（src/*.test.js）
+  npm run build      # Vite 生产分包构建（three 独立 vendor chunk + 业务轻包）
+  npm run check      # 合并/提交前强制门禁：npm run typecheck && npm test && npm run build
   ```
 
 ---

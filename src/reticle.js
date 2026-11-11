@@ -72,7 +72,8 @@ export function createReticleController({ reticleEl, numberEl, labelEl, finePoin
           reticleEl.classList.add('visible');
         }
       }
-      const overInteractive = Boolean(event.target?.closest?.('button, a, input, dialog, .timeline-scrub-zone'));
+      const overInteractive = event.target instanceof Element
+        && Boolean(event.target.closest('button, a, input, dialog, .timeline-scrub-zone'));
       if (overInteractive && reticleEl?.dataset.state !== 'photo') {
         reticleEl.dataset.state = 'ui';
       } else if (!overInteractive && reticleEl?.dataset.state === 'ui') {

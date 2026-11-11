@@ -183,7 +183,6 @@ export function createFocusLiquidMaterial(blankTex) {
       uniform float uOpacity;
       uniform float uTime;
       varying vec2 vUv;
-      varying vec2 vSheenVec;
       varying float vSheen;
 
       vec2 coverUv(vec2 uv, float imgAspect, float plateAspect) {

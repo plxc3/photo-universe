@@ -17,6 +17,7 @@ import { createWheelStepGate, createReticleController } from './reticle.js';
 import { createFocusUiController } from './focus-ui.js';
 import { createCinemaExportController } from './cinema-export-ui.js';
 
+/** @param {string} id @returns {any} */
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
 const inspecting = params.has('inspect');
@@ -202,7 +203,7 @@ function setChromeInert() {
     $('app').classList.contains('focus-active') ||
     $('app').classList.contains('threshold-locked') ||
     $('app').classList.contains('recording-active');
-  document.querySelectorAll('.chrome').forEach((element) => { element.inert = hidden; });
+  /** @type {NodeListOf<HTMLElement>} */ (document.querySelectorAll('.chrome')).forEach((element) => { element.inert = hidden; });
 }
 
 function syncPlaying() {
@@ -331,7 +332,7 @@ function updateMode(mode) {
   $('app').classList.toggle('mode-tunnel', mode === 'tunnel');
   const index = FORMATIONS.findIndex((formation) => formation.id === mode);
   if (index >= 0) $('mode-name').textContent = FORMATIONS[index].label;
-  document.querySelectorAll('[data-mode]').forEach((button) => {
+  /** @type {NodeListOf<HTMLButtonElement>} */ (document.querySelectorAll('[data-mode]')).forEach((button) => {
     button.setAttribute('aria-pressed', String(button.dataset.mode === mode));
   });
   if (!universe?.film && !universe?.scrollTimeline) {
@@ -355,7 +356,7 @@ function setControlsDisabled(value) {
     const el = $(id);
     if (el) el.disabled = value || !universe;
   }
-  document.querySelectorAll('[data-mode]').forEach((button) => {
+  /** @type {NodeListOf<HTMLButtonElement>} */ (document.querySelectorAll('[data-mode]')).forEach((button) => {
     button.disabled = value || !universe;
   });
   $('scene').setAttribute('aria-busy', String(value));
@@ -373,7 +374,7 @@ async function importPhotos(files, options = {}) {
   if (universe?.focusState) universe.closeFocus(true);
   if (universe?.film) filmExport.leaveFilm();
   exitScrollMode(false);
-  for (const dialog of document.querySelectorAll('dialog[open]')) dialog.close();
+  for (const dialog of /** @type {NodeListOf<HTMLDialogElement>} */ (document.querySelectorAll('dialog[open]'))) dialog.close();
 
   busy = true;
   clearTimeout(loaderHideTimer);
@@ -607,7 +608,9 @@ async function handleRememberToggle(checked) {
   await gallery.syncVaultUI();
 }
 
-$('gallery-remember')?.addEventListener('change', (event) => handleRememberToggle(event.target.checked));
+$('gallery-remember')?.addEventListener('change', (event) => {
+  if (event.target instanceof HTMLInputElement) handleRememberToggle(event.target.checked);
+});
 $('clear-vault')?.addEventListener('click', async () => {
   await albumVault.clear().catch(() => {});
   await gallery.syncVaultUI();
@@ -618,7 +621,9 @@ const triggerFilePicker = () => $('file-input').click();
 $('import').addEventListener('click', triggerFilePicker);
 $('import-quick').addEventListener('click', triggerFilePicker);
 $('file-input').addEventListener('change', (event) => {
-  if (event.target.files.length) importPhotos(event.target.files);
+  if (event.target instanceof HTMLInputElement && event.target.files?.length) {
+    importPhotos(event.target.files);
+  }
 });
 
 $('sound-toggle').addEventListener('click', () => {
@@ -674,14 +679,14 @@ $('gallery-next').addEventListener('click', () => gallery.stepPage(1));
 focusUi.bindFallbackModalEvents();
 filmExport.bindFilmAndExportEvents();
 
-document.querySelectorAll('[data-mode]').forEach((button) => {
+/** @type {NodeListOf<HTMLButtonElement>} */ (document.querySelectorAll('[data-mode]')).forEach((button) => {
   button.addEventListener('click', () => {
     if (!universe || busy) return;
     if ($('gallery-dialog').open) closeDialogSmooth($('gallery-dialog'));
     filmExport.leaveFilm(false);
     exitScrollMode(false);
     soundscape.playFocusPulse(true);
-    universe.setFormation(button.dataset.mode);
+    universe.setFormation(/** @type {'orbit'|'tunnel'|'sphere'|'helix'} */ (button.dataset.mode));
   });
 });
 
@@ -766,6 +771,14 @@ document.addEventListener('keydown', (event) => {
     if (event.key === 'ArrowRight') { event.preventDefault(); focusUi.nextPhoto(1); }
     return;
   }
+  const targetEl = event.target instanceof Element ? event.target : null;
+  if ($('gallery-dialog').open && $('gallery-dialog').dataset.closing !== 'true') {
+    if (event.key.toLowerCase() === 'i' && !targetEl?.closest('input,textarea,select')) {
+      event.preventDefault();
+      closeDialogSmooth($('gallery-dialog'));
+    }
+    return;
+  }
   if (hasOpenDialog() || !universe) return;
   if (universe.focusState) {
     if (event.key === 'ArrowLeft') { event.preventDefault(); focusUi.nextPhoto(-1); return; }
@@ -778,9 +791,21 @@ document.addEventListener('keydown', (event) => {
     else exitScrollMode(true);
     return;
   }
-  if (event.target.closest('input,textarea,select')) return;
-  if (event.code === 'Space' && !event.target.closest('button,a')) { event.preventDefault(); togglePlaying(); }
-  if (event.key.toLowerCase() === 'h') toggleClean();
+  if (targetEl?.closest('input,textarea,select,[role="slider"]')) return;
+  if (event.code === 'Space' && !targetEl?.closest('button,a')) { event.preventDefault(); togglePlaying(); return; }
+  const lowerKey = event.key.toLowerCase();
+  if (lowerKey === 'h') { toggleClean(); return; }
+  if (lowerKey === 'm') { $('sound-toggle')?.click(); return; }
+  if (lowerKey === 'i' && !busy && !filmExport.isRecording()) { gallery.openGallery(); return; }
+  if (!busy && !filmExport.isRecording() && !universe.focusState && ['1', '2', '3', '4'].includes(event.key)) {
+    const targetMode = FORMATIONS[Number(event.key) - 1]?.id;
+    if (targetMode) {
+      filmExport.leaveFilm(false);
+      exitScrollMode(false);
+      soundscape.playFocusPulse(true);
+      universe.setFormation(/** @type {'orbit'|'tunnel'|'sphere'|'helix'} */ (targetMode));
+    }
+  }
 });
 
 document.addEventListener('dragenter', (event) => {

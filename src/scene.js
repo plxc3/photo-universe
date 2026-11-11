@@ -35,29 +35,20 @@ const TUNNEL_MOOD_PRIMARY = '#101826';
 const TUNNEL_MOOD_SECONDARY = '#1f1510';
 const IDLE_RING_RATES = [0.22, -0.17, 0.26, -0.14];
 
-export class PhotoUniverse {
-  constructor(container, {
-    onPick,
-    onHoverPhoto,
-    onHoverStateChange,
-    onFocusChange,
-    onFilmProgress,
-    onFilmEnd,
-    onModeChange,
-    onContextLost,
-    onFrame,
-  } = {}) {
+const UniverseMixinBase = /** @type {new () => (typeof pointerPickingMethods & typeof morphEngineMethods & typeof focusStageMethods & typeof scrollTheatreMethods)} */ (class {});
+Object.assign(UniverseMixinBase.prototype, pointerPickingMethods, morphEngineMethods, focusStageMethods, scrollTheatreMethods);
+
+export class PhotoUniverse extends UniverseMixinBase {
+  constructor(container, /** @type {Record<string, any>} */ options = {}) {
+    super();
+    const {
+      onPick, onHoverPhoto, onHoverStateChange, onFocusChange,
+      onFilmProgress, onFilmEnd, onModeChange, onContextLost, onFrame,
+    } = options;
     this.container = container;
     this.callbacks = {
-      onPick,
-      onHoverPhoto,
-      onHoverStateChange,
-      onFocusChange,
-      onFilmProgress,
-      onFilmEnd,
-      onModeChange,
-      onContextLost,
-      onFrame,
+      onPick, onHoverPhoto, onHoverStateChange, onFocusChange,
+      onFilmProgress, onFilmEnd, onModeChange, onContextLost, onFrame,
     };
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(BACKGROUND);
@@ -130,20 +121,44 @@ export class PhotoUniverse {
     this.meshes = [];
     this.textures = [];
     this.instances = [];
+    this.photos = [];
+    this.count = 0;
     this.atlasCanvases = new Set();
     this.mode = 'orbit';
     this.running = !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     this.speed = 0.7;
     this.elapsed = 0;
     this.film = null;
+    this.morph = null;
+    this.reveal = null;
+    this.viewTransition = null;
+    this.scrollTimeline = null;
+    this.thresholdState = null;
+    this.heldViewOffset = null;
+    this.formationPortrait = 0;
+    this.layoutAspect = 1;
+    this.idleBaseTilt = 0;
+    this.idleTiltOffset = 0;
+    this.idleYawElapsed = 0;
+    this._idleVelScale = 0;
+    this._fovVel = 0;
+    this._camVel = new THREE.Vector3();
+    this._targetVel = new THREE.Vector3();
+    this._camBefore = new THREE.Vector3();
+    this._targetBefore = new THREE.Vector3();
     this.focusState = null;
     this.focusPlate = null;
+    this._closingPlate = null;
+    this._blankFocusTexture = null;
+    this.focusOverlayScene = null;
+    this._decodedPhotoImages = new Map();
     this.focusGeneration = 0;
     this.exportResolution = null;
     this._slowFrames = 0;
     this._postDegraded = false;
     this.reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     this.pointerEnabled = !this.reducedMotion && window.matchMedia('(hover: hover) and (pointer: fine)').matches;
+    this.darkroomPipeline = null;
 
     const lowMemory = (globalThis.navigator?.deviceMemory || 8) <= 4;
     if (!this.reducedMotion && !lowMemory) {
@@ -224,7 +239,8 @@ export class PhotoUniverse {
   }
 
   ensurePhotoUniforms() {
-    const u = (this.photoUniforms ||= {});
+    /** @type {any} */
+    const u = (this.photoUniforms ||= /** @type {any} */ ({}));
     u.uReveal ||= { value: 1 };
     u.uDepthNear ||= { value: 36 };
     u.uDepthFar ||= { value: 110 };
@@ -235,7 +251,7 @@ export class PhotoUniverse {
     u.uFocusAmount ||= { value: 0 };
     u.uFocusSlotHide ||= { value: 0 };
     u.uFocusWorld ||= { value: new THREE.Vector3(0, 0, 9999) };
-    return u;
+    return /** @type {NonNullable<typeof this.photoUniforms>} */ (u);
   }
 
   resize() {
@@ -683,9 +699,10 @@ export class PhotoUniverse {
   }
 
   _renderFrame(timeSeconds) {
+    const hasStageContent = Boolean(this.instances?.length || this.focusState || this._closingPlate || this.exportResolution);
     const thresholdBlur = this.thresholdState ? (this.thresholdState.blur || 0) : 0;
     const focusBlur = clamp(Math.max(this.photoUniforms?.uFocusAmount?.value || 0, thresholdBlur), 0, 1);
-    if (this.darkroomPipeline?.enabled) {
+    if (this.darkroomPipeline?.enabled && hasStageContent) {
       const morphImpulse = this.morph
         ? Math.sin(Math.PI * clamp(this.morph.elapsed / Math.max(0.01, this.morph.duration), 0, 1))
         : 0;
@@ -895,7 +912,9 @@ export class PhotoUniverse {
         if (this.reveal.elapsed === this.reveal.duration) this.reveal = null;
       }
       const density = this.mode === 'tunnel' ? 0.0042 : 0.0010;
-      this.scene.fog.density = THREE.MathUtils.lerp(this.scene.fog.density, density, 1 - Math.exp(-dt * 3));
+      if (this.scene.fog instanceof THREE.FogExp2) {
+        this.scene.fog.density = THREE.MathUtils.lerp(this.scene.fog.density, density, 1 - Math.exp(-dt * 3));
+      }
     }
 
     this._updateFocusStage(time, dt);
@@ -973,11 +992,3 @@ export class PhotoUniverse {
     this.renderer.domElement.remove();
   }
 }
-
-Object.assign(
-  PhotoUniverse.prototype,
-  pointerPickingMethods,
-  morphEngineMethods,
-  focusStageMethods,
-  scrollTheatreMethods,
-);

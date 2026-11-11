@@ -17,6 +17,7 @@ export const TUNNEL_SPAN = TUNNEL_Z_MAX - TUNNEL_Z_MIN;
 
 const TAU = Math.PI * 2;
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
+/** @type {Array<[number, number]>} */
 const RING_TILTS = [
   [0.88, 0.46],
   [-0.84, 0.54],
@@ -302,7 +303,8 @@ const BUILDERS = { orbit, tunnel, sphere, helix };
 /**
  * @param {'orbit'|'tunnel'|'sphere'|'helix'} id
  * @param {number} count A non-negative integer.
- * @returns {Array<{position: number[], rotation: number[], scale: number}>}
+ * @param {number} [portrait=0]
+ * @returns {Array<{position: number[], rotation: number[], scale: number, ring?: number, facet?: number, breathDelta?: number[] | null}>}
  */
 export function createFormation(id, count, portrait = 0) {
   if (!Object.hasOwn(BUILDERS, id)) throw new RangeError(`Unknown formation: ${id}`);

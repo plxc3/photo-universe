@@ -30,7 +30,7 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run unit tests & bundle gate
+      - name: Run typecheck, unit tests & bundle gate
         run: npm run check
 
       - name: Configure Pages

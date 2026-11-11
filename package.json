@@ -26,13 +26,16 @@
     "dev": "vite --host 127.0.0.1 --port 5178",
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1 --port 5178",
+    "typecheck": "tsc --noEmit",
     "test": "node --test src/*.test.js",
-    "check": "npm test && npm run build"
+    "check": "npm run typecheck && npm test && npm run build"
   },
   "dependencies": {
     "three": "^0.180.0"
   },
   "devDependencies": {
+    "@types/three": "^0.187.0",
+    "typescript": "^7.0.2",
     "vite": "^7.1.0"
   }
 }

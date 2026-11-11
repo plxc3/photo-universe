@@ -15,7 +15,7 @@ const AUDIO_MIME_CANDIDATES = [
   ...MIME_CANDIDATES,
 ];
 
-const noop = () => {};
+const noop = (/** @type {any[]} */ ..._args) => {};
 
 function stopTracks(stream) {
   if (!stream || typeof stream.getTracks !== "function") return;
@@ -37,7 +37,7 @@ function attempt(action) {
 }
 
 export class CanvasRecorder {
-  constructor(canvas, { onStart, onStop, onError, audioTrack = null, fps = FPS, videoBitsPerSecond = VIDEO_BITS_PER_SECOND } = {}) {
+  constructor(canvas, { onStart = noop, onStop = noop, onError = noop, audioTrack = null, fps = FPS, videoBitsPerSecond = VIDEO_BITS_PER_SECOND } = {}) {
     this._canvas = canvas;
     this._onStart = typeof onStart === "function" ? onStart : noop;
     this._onStop = typeof onStop === "function" ? onStop : noop;

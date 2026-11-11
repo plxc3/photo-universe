@@ -91,7 +91,7 @@ export class AlbumVault {
       };
     });
 
-    await new Promise((resolve, reject) => {
+    await /** @type {Promise<void>} */ (new Promise((resolve, reject) => {
       const tx = db.transaction(STORE_NAME, 'readwrite');
       const store = tx.objectStore(STORE_NAME);
       store.clear();
@@ -101,7 +101,7 @@ export class AlbumVault {
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error || new Error('写入本地相册缓存失败（可能超出磁盘配额）。'));
       tx.onabort = () => reject(tx.error || new Error('本地相册写入已中止。'));
-    });
+    }));
 
     return { saved: records.length, totalBytes };
   }
@@ -152,12 +152,12 @@ export class AlbumVault {
   async clear() {
     if (!this.isSupported()) return;
     const db = await this._open();
-    await new Promise((resolve, reject) => {
+    await /** @type {Promise<void>} */ (new Promise((resolve, reject) => {
       const tx = db.transaction(STORE_NAME, 'readwrite');
       tx.objectStore(STORE_NAME).clear();
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
-    });
+    }));
   }
 
   dispose() {

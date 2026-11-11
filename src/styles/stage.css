@@ -39,6 +39,11 @@
   height: 14px;
   z-index: 10;
   cursor: ew-resize;
+  outline: none;
+}
+#app:has(.timeline-scrub-zone:focus-visible) .timeline-hairline {
+  height: 3px;
+  opacity: 1;
 }
 .recording-active .timeline-scrub-zone {
   pointer-events: none;
@@ -71,6 +76,14 @@
   align-items: baseline;
   gap: 12px;
   pointer-events: auto;
+}
+.hud-corner::before {
+  content: '';
+  position: absolute;
+  inset: -16px -24px;
+  z-index: -1;
+  background: radial-gradient(ellipse at center, rgba(2, 2, 4, 0.56) 0%, rgba(2, 2, 4, 0.24) 58%, transparent 100%);
+  pointer-events: none;
 }
 .is-idle .hud-corner,
 .threshold-locked .hud-corner,
@@ -113,7 +126,8 @@
   font-size: clamp(24px, 2vw, 31px);
   letter-spacing: -0.035em;
   color: var(--text);
-  opacity: 0.9;
+  opacity: 0.92;
+  text-shadow: var(--ink-shadow);
   transition: opacity var(--dur-fast) ease;
 }
 .brand-link:hover .brand-word {
@@ -146,6 +160,9 @@
 @keyframes eq-breathe {
   0%, 100% { transform: scaleY(0.38); opacity: 0.65; }
   50% { transform: scaleY(1); opacity: 1; }
+}
+#sound-toggle[aria-pressed='true']:not(:hover):not(:focus-visible)::after {
+  transform: scaleX(0);
 }
 #sound-toggle[aria-pressed='false'] {
   color: var(--faint);
@@ -196,6 +213,10 @@
   color: var(--faint);
   font-variant-numeric: tabular-nums;
   text-shadow: var(--ink-shadow);
+}
+.scroll-active .act-time,
+.film-active .act-time {
+  color: var(--muted);
 }
 .stop-whisper {
   color: var(--accent);
@@ -351,6 +372,30 @@
 .threshold-prompt {
   font-size: 11px;
   letter-spacing: 0.24em;
+}
+@media (max-aspect-ratio: 1/1), (max-width: 860px) {
+  .loader {
+    transition:
+      background 1.25s var(--ease-out),
+      opacity 1.05s var(--ease-out),
+      transform 1.25s var(--ease-out),
+      backdrop-filter 1.25s var(--ease-out),
+      -webkit-backdrop-filter 1.25s var(--ease-out);
+  }
+  .loader[data-phase='threshold'] {
+    background: radial-gradient(
+      ellipse 62% 36% at 50% 49%,
+      rgba(2, 2, 4, 0.68) 0%,
+      rgba(2, 2, 4, 0.34) 56%,
+      rgba(2, 2, 4, 0.72) 100%
+    );
+    backdrop-filter: blur(13px) saturate(1.08);
+    -webkit-backdrop-filter: blur(13px) saturate(1.08);
+  }
+  .loader[data-phase='entering'] {
+    backdrop-filter: blur(0px) saturate(1);
+    -webkit-backdrop-filter: blur(0px) saturate(1);
+  }
 }
 
 /* Monopo Borderless Museum Exhibition Caption (#focus-hud) */

@@ -1,5 +1,12 @@
 @font-face {
   font-family: Newsreader;
+  src: url('/fonts/newsreader-latin-variable.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 200 800;
+  font-display: swap;
+}
+@font-face {
+  font-family: Newsreader;
   src: url('/fonts/newsreader-latin-italic-variable.woff2') format('woff2');
   font-style: italic;
   font-weight: 200 800;
@@ -32,7 +39,7 @@
   --brand: Newsreader, Georgia, serif;
   --pad-x: clamp(20px, 3.4vw, 56px);
   --pad-y: clamp(18px, 2.8vh, 38px);
-  --ink-shadow: 0 2px 16px rgba(0, 0, 0, 0.92), 0 0 4px rgba(0, 0, 0, 0.85);
+  --ink-shadow: 0 1px 3px rgba(0, 0, 0, 0.98), 0 3px 18px rgba(0, 0, 0, 0.94), 0 0 34px rgba(0, 0, 0, 0.82);
   font-family: var(--font);
   font-synthesis: none;
   font-optical-sizing: auto;
@@ -150,11 +157,14 @@ button:focus-visible, a:focus-visible, input:focus-visible {
   transition: transform 0.36s var(--ease-out);
 }
 .text-link:hover,
+.text-link:focus-visible,
 .text-link[aria-pressed='true'],
 .text-link[aria-current='true'] {
   color: var(--text);
+  outline: none;
 }
 .text-link:hover::after,
+.text-link:focus-visible::after,
 .text-link[aria-pressed='true']::after,
 .text-link[aria-current='true']::after {
   transform: scaleX(1);
@@ -178,6 +188,19 @@ button:focus-visible, a:focus-visible, input:focus-visible {
   font-size: 11px;
   user-select: none;
   text-shadow: var(--ink-shadow);
+}
+@media (pointer: coarse) {
+  .text-link {
+    padding: 8px 2px;
+  }
+  .curtain-close em,
+  #focus-close em,
+  .restore-whisper em {
+    display: none;
+  }
+  .curtain-close:focus-visible::after {
+    transform: scaleX(0);
+  }
 }
 
 /* Borderless Optical Viewfinder Reticle (Fine Desktop Pointer Only) */
@@ -228,12 +251,14 @@ button:focus-visible, a:focus-visible, input:focus-visible {
   }
   .reticle-tag {
     position: absolute;
-    left: 28px;
+    left: 22px;
     top: 50%;
     transform: translate3d(-6px, -50%, 0);
     display: inline-flex;
     align-items: baseline;
     gap: 7px;
+    padding: 5px 12px;
+    background: radial-gradient(ellipse at center, rgba(2, 2, 4, 0.78) 0%, rgba(2, 2, 4, 0.44) 64%, transparent 100%);
     white-space: nowrap;
     opacity: 0;
     text-shadow: var(--ink-shadow);
@@ -245,7 +270,7 @@ button:focus-visible, a:focus-visible, input:focus-visible {
   }
   .cursor-reticle[data-flip='left'] .reticle-tag {
     left: auto;
-    right: 28px;
+    right: 22px;
   }
   .reticle-dot {
     width: 5px;
@@ -266,8 +291,8 @@ button:focus-visible, a:focus-visible, input:focus-visible {
   .reticle-label {
     font-size: 10.5px;
     letter-spacing: 0.04em;
-    color: var(--muted);
-    max-width: 180px;
+    color: rgba(245, 241, 234, 0.88);
+    max-width: 196px;
     overflow: hidden;
     text-overflow: ellipsis;
   }

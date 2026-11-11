@@ -205,10 +205,10 @@ export function createCinemaExportController({
   }
 
   function bindFilmAndExportEvents() {
-    document.querySelectorAll('[data-aspect]').forEach((button) => {
+    /** @type {NodeListOf<HTMLElement>} */ (document.querySelectorAll('[data-aspect]')).forEach((button) => {
       button.addEventListener('click', () => {
-        exportAspect = button.dataset.aspect;
-        document.querySelectorAll('[data-aspect]').forEach((link) => {
+        exportAspect = button.dataset.aspect || 'auto';
+        /** @type {NodeListOf<HTMLElement>} */ (document.querySelectorAll('[data-aspect]')).forEach((link) => {
           link.setAttribute('aria-pressed', String(link.dataset.aspect === exportAspect));
         });
       });
@@ -245,8 +245,25 @@ export function createCinemaExportController({
     };
     scrubZone?.addEventListener('pointerup', endEdgeScrub);
     scrubZone?.addEventListener('pointercancel', endEdgeScrub);
+    scrubZone?.addEventListener('keydown', (event) => {
+      const { universe } = getState();
+      if ((!universe?.film && !universe?.scrollTimeline) || recorder) return;
+      const current = universe.film
+        ? (universe.film.elapsed || 0)
+        : (universe.scrollTimeline?.targetTime ?? universe.scrollTimeline?.currentTime ?? 0);
+      let next = null;
+      if (event.key === 'ArrowRight' || event.key === 'ArrowUp') next = Math.min(29.65, current + 1.2);
+      else if (event.key === 'ArrowLeft' || event.key === 'ArrowDown') next = Math.max(0, current - 1.2);
+      else if (event.key === 'Home') next = 0;
+      else if (event.key === 'End') next = 29.65;
+      if (next === null) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (universe.film) universe.seekFilmLive(next, { paused: false });
+      else universe.setScrollTimeline(next);
+    });
 
-    document.querySelectorAll('[data-act-seek]').forEach((button) => {
+    /** @type {NodeListOf<HTMLElement>} */ (document.querySelectorAll('[data-act-seek]')).forEach((button) => {
       button.addEventListener('click', () => {
         const { universe, busy } = getState();
         if (!universe || busy || recorder) return;
@@ -281,7 +298,7 @@ export function createCinemaExportController({
       $('inspection-panel').hidden = false;
       $('sample-performance')?.addEventListener('click', startProfile);
       $('stop-performance')?.addEventListener('click', finishProfile);
-      document.querySelectorAll('[data-inspect-seek]').forEach((button) => {
+      /** @type {NodeListOf<HTMLElement>} */ (document.querySelectorAll('[data-inspect-seek]')).forEach((button) => {
         button.addEventListener('click', () => {
           const { busy, universe, photos } = getState();
           if (busy || !universe || !photos.length) return;

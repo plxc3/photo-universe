@@ -126,8 +126,10 @@ dialog::backdrop {
   letter-spacing: 0.08em;
 }
 .curtain-modes button:hover,
+.curtain-modes button:focus-visible,
 .curtain-modes button[aria-pressed='true'] {
   color: var(--text);
+  outline: none;
 }
 .curtain-modes button[aria-pressed='true'] i {
   opacity: 1;
@@ -145,6 +147,7 @@ dialog::backdrop {
   transition: transform 0.36s var(--ease-out);
 }
 .curtain-modes button:hover::after,
+.curtain-modes button:focus-visible::after,
 .curtain-modes button[aria-pressed='true']::after {
   transform: scaleX(1);
   transform-origin: left center;
@@ -248,8 +251,10 @@ dialog::backdrop {
   transition: color var(--dur-fast) ease;
 }
 .gallery-chapters button:hover,
+.gallery-chapters button:focus-visible,
 .gallery-chapters button[aria-pressed='true'] {
   color: var(--text);
+  outline: none;
 }
 .gallery-chapters button::after {
   content: '';
@@ -262,6 +267,7 @@ dialog::backdrop {
   transform: scaleX(0);
   transition: transform 0.32s var(--ease-out);
 }
+.gallery-chapters button:focus-visible::after,
 .gallery-chapters button[aria-pressed='true']::after {
   transform: scaleX(1);
 }
@@ -300,8 +306,13 @@ dialog::backdrop {
 .gallery-grid img.is-loaded {
   opacity: 0.9;
 }
-.gallery-grid button:hover {
+.gallery-grid button:hover,
+.gallery-grid button:focus-visible {
   color: var(--text);
+  outline: none;
+}
+.gallery-grid button:focus-visible .contact-well {
+  box-shadow: 0 0 0 1px var(--accent);
 }
 .gallery-grid button:hover img.is-loaded {
   opacity: 1;
@@ -559,8 +570,45 @@ dialog::backdrop {
   .focus-hud {
     grid-template-columns: minmax(0, 1fr) auto;
   }
+  .curtain-actions > .hud-sep {
+    display: none;
+  }
+  .curtain-actions {
+    gap: 8px 18px;
+  }
   .gallery-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .curtain-masthead {
+    padding-bottom: 12px;
+  }
+  .curtain-studio {
+    gap: 12px 24px;
+    padding: 12px 0;
+  }
+  .curtain-subbar {
+    gap: 10px 20px;
+    padding: 10px 0;
+  }
+  .gallery-chapters {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+    gap: 18px;
+    padding: 10px 0;
+  }
+  .gallery-chapters::-webkit-scrollbar {
+    display: none;
+  }
+  .gallery-chapters button {
+    flex: none;
+  }
+  .gallery-grid {
+    padding: 18px 0;
   }
 }
 
@@ -574,10 +622,6 @@ dialog::backdrop {
   }
   .focus-controls {
     justify-content: flex-start;
-  }
-  .focus-tone,
-  .focus-author {
-    display: none;
   }
   .gallery-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
