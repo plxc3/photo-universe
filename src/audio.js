@@ -30,9 +30,13 @@ export class SpatialSoundscape {
     this._stemLoading = false;
     this._stemPromise = null;
     this._oscillators = [];
+    this._analyser = null;
+    this._freqBins = null;
+    this._energy = { level: 0, bass: 0, high: 0, active: false };
     this._muted = false;
     this._disposed = false;
     this._lastTickMs = -Infinity;
+    this._lastUiTickMs = -Infinity;
     this._initialized = false;
   }
 
@@ -154,6 +158,19 @@ export class SpatialSoundscape {
     bus.connect(master);
     bus.connect(exportMaster);
     this._bus = bus;
+
+    if (typeof ctx.createAnalyser === 'function') {
+      try {
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = 64;
+        analyser.smoothingTimeConstant = 0.82;
+        bus.connect(analyser);
+        this._analyser = analyser;
+        this._freqBins = new Uint8Array(analyser.frequencyBinCount || 32);
+      } catch {
+        this._analyser = null;
+      }
+    }
 
     // 1) Warm analog D-major-9 darkroom pad
     const droneFilter = ctx.createBiquadFilter();
@@ -289,17 +306,18 @@ export class SpatialSoundscape {
     twist = 0,
     breath = 0,
     morphImpulse = 0,
+    warpBoost = 0,
     focused = false,
     pan = 0,
   } = {}) {
     if (!this._initialized || !this._ctx || this._muted || this._disposed) return;
     const now = this._ctx.currentTime || 0;
-    const rush = Math.min(1, tunnelFactor * 0.65 + (twist / 4.35) * 0.55 + morphImpulse * 0.7);
+    const rush = Math.min(1, tunnelFactor * 0.65 + (twist / 4.35) * 0.55 + morphImpulse * 0.7 + warpBoost * 0.88);
 
     const hasStem = Boolean(this._stemSource);
-    const droneCutoff = focused ? 190 : 250 + rush * 360 + breath * 280;
+    const droneCutoff = focused ? 190 : 250 + rush * 360 + breath * 280 + warpBoost * 240;
     const baseDrone = hasStem ? 0.022 : 0.046;
-    const droneLevel = focused ? baseDrone * 0.72 : baseDrone + morphImpulse * 0.022;
+    const droneLevel = focused ? baseDrone * 0.72 : baseDrone + morphImpulse * 0.022 + warpBoost * 0.026;
     this._droneFilter?.frequency.setTargetAtTime?.(droneCutoff, now, 0.08);
     this._droneGain?.gain.setTargetAtTime?.(droneLevel, now, 0.08);
 
@@ -311,13 +329,96 @@ export class SpatialSoundscape {
     }
 
     if (this._windFilter && this._windGain) {
-      this._windFilter.frequency.setTargetAtTime?.(160 + rush * 680, now, 0.06);
+      this._windFilter.frequency.setTargetAtTime?.(160 + rush * 680 + warpBoost * 340, now, 0.06);
       this._windGain.gain.setTargetAtTime?.(rush * 0.075, now, 0.07);
       this._windPanner?.pan.setTargetAtTime?.(Math.max(-0.8, Math.min(0.8, pan)), now, 0.08);
     }
 
     if (this._crystalGain) {
-      this._crystalGain.gain.setTargetAtTime?.(breath * 0.068, now, 0.08);
+      this._crystalGain.gain.setTargetAtTime?.(Math.min(0.11, breath * 0.068 + warpBoost * 0.032), now, 0.08);
+    }
+  }
+
+  /**
+   * Bi-directional audio-reactive telemetry (`0..1`) driving WebGL shaders, dust shimmer,
+   * and the Active Theory live spectrum HUD with zero per-frame heap allocations.
+   */
+  getEnergy(timeSec = 0) {
+    const out = this._energy;
+    out.active = this.active;
+    if (this.active && this._analyser && this._freqBins) {
+      this._analyser.getByteFrequencyData(this._freqBins);
+      const bins = this._freqBins;
+      const n = bins.length || 1;
+      let bassSum = 0;
+      let midHighSum = 0;
+      const bassCount = Math.max(1, Math.min(6, n));
+      for (let i = 0; i < n; i++) {
+        const v = bins[i] / 255;
+        if (i < bassCount) bassSum += v;
+        else midHighSum += v;
+      }
+      const bass = Math.min(1, (bassSum / bassCount) * 1.35);
+      const high = Math.min(1, (midHighSum / Math.max(1, n - bassCount)) * 1.85);
+      out.bass += (bass - out.bass) * 0.28;
+      out.high += (high - out.high) * 0.28;
+      out.level = Math.min(1, out.bass * 0.62 + out.high * 0.38);
+      return out;
+    }
+    const pulse = this.active
+      ? 0.22 + 0.12 * Math.sin(timeSec * 1.7) + 0.08 * Math.cos(timeSec * 2.9)
+      : 0;
+    out.bass += (pulse - out.bass) * 0.14;
+    out.high += (pulse * 0.72 - out.high) * 0.14;
+    out.level = out.bass * 0.65 + out.high * 0.35;
+    return out;
+  }
+
+  /** Precision Active Theory telemetry micro-tick for chapter/portal/beacon hover. */
+  playUiTick(nowMs = performance.now()) {
+    if (!this._initialized || !this._ctx || this._muted || this._disposed) return;
+    if (this._ctx.state !== 'running' || nowMs - this._lastUiTickMs < 48) return;
+    this._lastUiTickMs = nowMs;
+    const t = this._ctx.currentTime;
+    const osc = this._ctx.createOscillator();
+    const env = this._ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(1960, t);
+    osc.frequency.exponentialRampToValueAtTime(980, t + 0.024);
+    env.gain.setValueAtTime(0.0001, t);
+    env.gain.exponentialRampToValueAtTime(0.009, t + 0.003);
+    env.gain.exponentialRampToValueAtTime(0.0001, t + 0.028);
+    osc.connect(env);
+    env.connect(this._bus);
+    osc.start(t);
+    osc.stop(t + 0.032);
+  }
+
+  /** Spatial portal warp harmonic sweep when jumping narrative chapters or engaging warp. */
+  playPortalWarp(rising = true) {
+    if (!this._initialized || !this._ctx || this._muted || this._disposed) return;
+    if (this._ctx.state !== 'running') return;
+    const t = this._ctx.currentTime;
+    const env = this._ctx.createGain();
+    env.gain.setValueAtTime(0.0001, t);
+    env.gain.exponentialRampToValueAtTime(0.026, t + 0.045);
+    env.gain.exponentialRampToValueAtTime(0.0001, t + 0.44);
+    env.connect(this._bus);
+
+    for (const [mult, wave, gainScale] of /** @type {Array<[number, OscillatorType, number]>} */ ([
+      [1.0, 'sine', 1.0],
+      [1.5, 'triangle', 0.45],
+    ])) {
+      const osc = this._ctx.createOscillator();
+      const subGain = this._ctx.createGain();
+      osc.type = wave;
+      osc.frequency.setValueAtTime((rising ? 146.83 : 293.66) * mult, t);
+      osc.frequency.exponentialRampToValueAtTime((rising ? 440.0 : 146.83) * mult, t + 0.38);
+      subGain.gain.value = gainScale;
+      osc.connect(subGain);
+      subGain.connect(env);
+      osc.start(t);
+      osc.stop(t + 0.46);
     }
   }
 

@@ -35,6 +35,7 @@ export function createFocusUiController({
   let focusHudHideTimer;
   let focusCaptionSwapTimer;
   let previousPlaying = true;
+  let activeStoryNote = '';
   let photoGeneration = 0;
   let photoRequest = null;
   let photoPointer = null;
@@ -82,6 +83,12 @@ export function createFocusUiController({
     const dateTag = photo.capturedDate || (photo.capturedYear ? String(photo.capturedYear) : '');
     const parts = [photo.toneLabel || '暗房 · ARCHIVE', aspectTag, dateTag].filter(Boolean);
     $('focus-tone').textContent = parts.join(' · ');
+    const storyEl = $('focus-story');
+    if (storyEl) {
+      const note = activeStoryNote || photo.story || '';
+      storyEl.textContent = note;
+      storyEl.hidden = !note;
+    }
   }
 
   function updateFocusCaption(photo, position, { stepping = false, flowDir = 1 } = {}) {
@@ -118,12 +125,13 @@ export function createFocusUiController({
     ]);
   }
 
-  function showPhoto(index, instanceIndex = -1, flowDir = 1) {
+  function showPhoto(index, instanceIndex = -1, flowDir = 1, storyNote = '') {
     const { busy, universe, photos, validPhotoIndices } = getState();
     if (busy || (universe?.film && !universe.film.interactive)) return;
     ensureThresholdDismissed();
     const position = validPhotoIndices.indexOf(index);
     if (position < 0) return;
+    activeStoryNote = storyNote || '';
     setSelectedPhoto(position);
     const photo = photos[index];
 

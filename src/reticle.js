@@ -1,5 +1,5 @@
 /**
- * Trackpad-aware wheel gesture gate & dt-damped optical viewfinder reticle.
+ * Trackpad-aware wheel gesture gate & Active Theory multi-state reactive cursor reticle.
  */
 
 /**
@@ -46,8 +46,9 @@ export function createWheelStepGate() {
 }
 
 /**
- * Desktop fine-pointer optical viewfinder reticle with instant entry positioning
- * (no corner fly-in) and frame-rate-independent exponential smoothing.
+ * Desktop fine-pointer Active Theory multi-state optical reticle:
+ * Dynamically transitions between `explore`, `photo`, `beacon`, `drag`, `warp`, and `ui`
+ * with velocity-coupled ring dynamics and zero-jump initial placement.
  */
 export function createReticleController({ reticleEl, numberEl, labelEl, finePointerQuery, reducedMotion }) {
   let targetX = -100;
@@ -56,6 +57,43 @@ export function createReticleController({ reticleEl, numberEl, labelEl, finePoin
   let currentY = -100;
   let active = false;
   let lastFrameTime = null;
+  let hoveredPhoto = false;
+  let hoveredBeacon = null;
+  let overInteractiveUi = false;
+
+  const syncModeState = (universe) => {
+    if (!reticleEl) return;
+    if (universe?.warpDriveActive) {
+      reticleEl.dataset.state = 'warp';
+      reticleEl.style.setProperty('--reticle-accent', '#e2c799');
+      if (numberEl) numberEl.textContent = 'WARP';
+      if (labelEl) labelEl.textContent = '引力跃迁推进中';
+      return;
+    }
+    if (universe?.dragging) {
+      reticleEl.dataset.state = 'drag';
+      reticleEl.style.setProperty('--reticle-accent', '#d8c5a8');
+      if (numberEl) numberEl.textContent = '360°';
+      if (labelEl) labelEl.textContent = '自由偏航环视';
+      return;
+    }
+    if (hoveredBeacon) {
+      reticleEl.dataset.state = 'beacon';
+      reticleEl.style.setProperty('--reticle-accent', hoveredBeacon.accent || '#e2c799');
+      if (numberEl) numberEl.textContent = hoveredBeacon.code;
+      if (labelEl) labelEl.textContent = hoveredBeacon.title + ' · 点击凝视';
+      return;
+    }
+    if (hoveredPhoto) {
+      reticleEl.dataset.state = 'photo';
+      return;
+    }
+    if (overInteractiveUi) {
+      reticleEl.dataset.state = 'ui';
+      return;
+    }
+    delete reticleEl.dataset.state;
+  };
 
   if (finePointerQuery?.matches && !reducedMotion?.matches && typeof window !== 'undefined') {
     window.addEventListener('pointermove', (event) => {
@@ -72,13 +110,8 @@ export function createReticleController({ reticleEl, numberEl, labelEl, finePoin
           reticleEl.classList.add('visible');
         }
       }
-      const overInteractive = event.target instanceof Element
-        && Boolean(event.target.closest('button, a, input, dialog, .timeline-scrub-zone'));
-      if (overInteractive && reticleEl?.dataset.state !== 'photo') {
-        reticleEl.dataset.state = 'ui';
-      } else if (!overInteractive && reticleEl?.dataset.state === 'ui') {
-        delete reticleEl.dataset.state;
-      }
+      overInteractiveUi = event.target instanceof Element
+        && Boolean(event.target.closest('button:not(.spatial-beacon), a, input, dialog, .timeline-scrub-zone'));
     }, { passive: true });
 
     document.addEventListener('pointerleave', () => {
@@ -89,23 +122,33 @@ export function createReticleController({ reticleEl, numberEl, labelEl, finePoin
   }
 
   return {
-    updateFrame(time) {
+    updateFrame(time, universe = null) {
       if (!active || !reticleEl) return;
       const dt = lastFrameTime !== null && Number.isFinite(time)
         ? Math.min(0.05, Math.max(0.001, (time - lastFrameTime) / 1000))
         : 1 / 60;
       lastFrameTime = Number.isFinite(time) ? time : null;
-      const alpha = 1 - Math.exp(-dt * 22);
-      currentX += (targetX - currentX) * alpha;
-      currentY += (targetY - currentY) * alpha;
+      const alpha = 1 - Math.exp(-dt * 24);
+      const dx = targetX - currentX;
+      const dy = targetY - currentY;
+      currentX += dx * alpha;
+      currentY += dy * alpha;
+      const speed = Math.min(1, Math.hypot(dx, dy) / 64);
       reticleEl.style.transform = `translate3d(${currentX.toFixed(1)}px, ${currentY.toFixed(1)}px, 0)`;
-      if (currentX > window.innerWidth - 240) reticleEl.dataset.flip = 'left';
+      reticleEl.style.setProperty('--reticle-vel', speed.toFixed(3));
+      if (currentX > window.innerWidth - 250) reticleEl.dataset.flip = 'left';
       else delete reticleEl.dataset.flip;
+      syncModeState(universe);
+    },
+
+    setBeaconHover(beacon = null) {
+      hoveredBeacon = beacon;
     },
 
     updateHoverState({ active: hovered, photoIndex }, photos, validPhotoIndices) {
       if (!reticleEl) return;
       if (hovered && photos[photoIndex]) {
+        hoveredPhoto = true;
         const photo = photos[photoIndex];
         reticleEl.dataset.state = 'photo';
         reticleEl.style.setProperty('--reticle-accent', photo.accentHex || '#c8a27c');
@@ -117,8 +160,9 @@ export function createReticleController({ reticleEl, numberEl, labelEl, finePoin
           const baseName = photo.title || photo.author || photo.name;
           labelEl.textContent = photo.capturedYear ? baseName + ' · ' + photo.capturedYear : baseName;
         }
-      } else if (reticleEl.dataset.state === 'photo') {
-        delete reticleEl.dataset.state;
+      } else {
+        hoveredPhoto = false;
+        if (reticleEl.dataset.state === 'photo') delete reticleEl.dataset.state;
       }
     },
   };

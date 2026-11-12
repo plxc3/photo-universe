@@ -231,6 +231,8 @@ export function createDustField(count = 260) {
     uPixelRatio: { value: 1 },
     uOpacity: { value: 0.24 },
     uConveyor: { value: 0 },
+    uWarpBoost: { value: 0 },
+    uAudioPulse: { value: 0 },
   };
 
   const material = new THREE.ShaderMaterial({
@@ -244,18 +246,21 @@ export function createDustField(count = 260) {
       uniform float uTime;
       uniform float uPixelRatio;
       uniform float uConveyor;
+      uniform float uWarpBoost;
+      uniform float uAudioPulse;
       varying float vAlpha;
       void main() {
         vec3 p = position;
         p.x += sin(uTime * 0.24 + aPhase) * 0.85;
         p.y += cos(uTime * 0.19 + aPhase * 1.3) * 0.85;
-        p.z = -132.0 + mod(p.z + 132.0 + uConveyor * 0.55 + uTime * 0.45, 196.0);
+        p.z = -132.0 + mod(p.z + 132.0 + uConveyor * 0.55 + uTime * (0.45 + uWarpBoost * 8.5), 196.0);
         vec4 mv = modelViewMatrix * vec4(p, 1.0);
         float dist = max(1.0, -mv.z);
-        gl_PointSize = clamp((28.0 * aScale * uPixelRatio) / dist, 1.0, 5.5);
+        float pulseSize = 1.0 + uAudioPulse * 0.28 + uWarpBoost * 0.45;
+        gl_PointSize = clamp((28.0 * aScale * pulseSize * uPixelRatio) / dist, 1.0, 6.8);
         float nearFade = smoothstep(2.0, 10.0, dist);
         float farFade = 1.0 - smoothstep(75.0, 165.0, dist);
-        vAlpha = nearFade * farFade * (0.55 + 0.45 * sin(uTime * 0.7 + aPhase));
+        vAlpha = nearFade * farFade * (0.55 + 0.45 * sin(uTime * 0.7 + aPhase)) * (1.0 + uAudioPulse * 0.35 + uWarpBoost * 0.55);
         gl_Position = projectionMatrix * mv;
       }
     `,
@@ -364,6 +369,10 @@ export class DarkroomPipeline {
         uFocusBlur: { value: 0 },
         uHalation: { value: 0.30 },
         uGrain: { value: 0.016 },
+        uPointerUv: { value: new THREE.Vector2(0.5, 0.5) },
+        uPointerVel: { value: new THREE.Vector2(0, 0) },
+        uRippleEnergy: { value: 0 },
+        uAudioEnergy: { value: 0 },
       },
       depthTest: false,
       depthWrite: false,
@@ -384,6 +393,10 @@ export class DarkroomPipeline {
         uniform float uFocusBlur;
         uniform float uHalation;
         uniform float uGrain;
+        uniform vec2 uPointerUv;
+        uniform vec2 uPointerVel;
+        uniform float uRippleEnergy;
+        uniform float uAudioEnergy;
         varying vec2 vUv;
 
         float hash12(vec2 p) {
@@ -424,20 +437,32 @@ export class DarkroomPipeline {
         void main() {
           vec2 centered = vUv - vec2(0.5);
           float r2 = dot(centered, centered);
-          vec2 dispersion = centered * r2 * (0.0085 * uWarp);
+
+          // Active Theory Hydra-inspired screen-space glass wake & velocity refraction
+          float aspect = uSceneTexel.y / max(1e-6, uSceneTexel.x);
+          vec2 toPtr = (vUv - uPointerUv) * vec2(aspect, 1.0);
+          float ptrDist2 = dot(toPtr, toPtr);
+          float ptrDist = sqrt(ptrDist2 + 1e-6);
+          float wake = exp(-ptrDist2 * 36.0) * uRippleEnergy * (1.0 - smoothstep(0.1, 0.6, uFocusBlur));
+          float ringWave = sin(ptrDist * 42.0 - uTime * 8.5) * exp(-ptrDist2 * 18.0) * uRippleEnergy * 0.35;
+          vec2 fluidRefract = uPointerVel * (wake * 0.014) + (toPtr / ptrDist) * (ringWave * 0.0028);
+          vec2 baseUv = clamp(vUv - fluidRefract, 0.001, 0.999);
+
+          vec2 dispersion = centered * r2 * (0.0085 * uWarp) + fluidRefract * 0.55;
 
           vec3 color;
           if (uFocusBlur > 0.006) {
-            color = sampleOpticalBokeh(vUv, uFocusBlur);
+            color = sampleOpticalBokeh(baseUv, uFocusBlur);
           } else {
-            float r = texture2D(tScene, clamp(vUv + dispersion, 0.0, 1.0)).r;
-            float g = texture2D(tScene, vUv).g;
-            float b = texture2D(tScene, clamp(vUv - dispersion, 0.0, 1.0)).b;
+            float r = texture2D(tScene, clamp(baseUv + dispersion, 0.0, 1.0)).r;
+            float g = texture2D(tScene, baseUv).g;
+            float b = texture2D(tScene, clamp(baseUv - dispersion, 0.0, 1.0)).b;
             color = vec3(r, g, b);
           }
 
-          vec3 glow = texture2D(tHalation, vUv).rgb;
-          color += glow * (uHalation * (1.0 + uFocusBlur * 0.45));
+          vec3 glow = texture2D(tHalation, baseUv).rgb;
+          float liveHalation = uHalation * (1.0 + uFocusBlur * 0.45 + uAudioEnergy * 0.24 + uWarp * 0.16);
+          color += glow * liveHalation;
           color = mix(clamp(color, 0.0, 1.0), filmicShoulder(color * 1.08), 0.42);
 
           // Optical lens vignette deepens subtly during close-up 3D Gaze
@@ -476,7 +501,15 @@ export class DarkroomPipeline {
     this.halationMaterial.uniforms.uTexelSize.value.set(1 / bw, 1 / bh);
   }
 
-  render(scene, camera, { time = 0, warp = 0, focusBlur = 0 } = {}) {
+  render(scene, camera, {
+    time = 0,
+    warp = 0,
+    focusBlur = 0,
+    pointerUv = null,
+    pointerVel = null,
+    rippleEnergy = 0,
+    audioEnergy = 0,
+  } = {}) {
     if (!this.enabled) {
       this.renderer.render(scene, camera);
       return;
@@ -489,11 +522,16 @@ export class DarkroomPipeline {
     this.renderer.setRenderTarget(this.bloomTarget);
     this.renderer.render(this.halationScene, this.orthoCamera);
 
-    this.compositeMaterial.uniforms.tScene.value = this.sceneTarget.texture;
-    this.compositeMaterial.uniforms.tHalation.value = this.bloomTarget.texture;
-    this.compositeMaterial.uniforms.uTime.value = time;
-    this.compositeMaterial.uniforms.uWarp.value = warp;
-    this.compositeMaterial.uniforms.uFocusBlur.value = focusBlur;
+    const cu = this.compositeMaterial.uniforms;
+    cu.tScene.value = this.sceneTarget.texture;
+    cu.tHalation.value = this.bloomTarget.texture;
+    cu.uTime.value = time;
+    cu.uWarp.value = warp;
+    cu.uFocusBlur.value = focusBlur;
+    if (pointerUv) cu.uPointerUv.value.copy(pointerUv);
+    if (pointerVel) cu.uPointerVel.value.copy(pointerVel);
+    cu.uRippleEnergy.value = rippleEnergy;
+    cu.uAudioEnergy.value = audioEnergy;
     this.renderer.setRenderTarget(previousTarget);
     this.renderer.render(this.compositeScene, this.orthoCamera);
   }

@@ -11,10 +11,12 @@ import {
 import {
   orbitFraming,
   orbitPosition,
+  restingViewFractions,
   easeInOut,
   portraitAmount,
   restRotation,
 } from './flight.js';
+import { deterministicHash } from './pool.js';
 
 const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
 const RING_AXIS_VECTORS = RING_AXES.map((axis) => new THREE.Vector3(...axis));
@@ -421,5 +423,63 @@ export const morphEngineMethods = {
       (this.stellationBreath || 0) !== (this.appliedStellationBreath || 0) ||
       this.ringSpinChanged();
     if (this.instances.length && (morphing || dynamicDirty)) this.uploadInstanceMatrices();
+  },
+
+  _initGenesisNebula() {
+    this.euler ||= new THREE.Euler();
+    this.instances.forEach((instance, index) => {
+      const h1 = instance.vortexHash || deterministicHash(index);
+      const h2 = deterministicHash(index + 9973);
+      const h3 = deterministicHash(index + 4099);
+      const targetAngle = Math.atan2(instance.targetPosition.y, instance.targetPosition.x);
+      const nebulaRadius = 30 + 54 * h1;
+      const nebulaAngle = targetAngle - (2.1 + 1.5 * h2);
+      const nebulaZ = (h3 - 0.5) * 116;
+      instance.fromPosition = new THREE.Vector3(
+        Math.cos(nebulaAngle) * nebulaRadius,
+        Math.sin(nebulaAngle) * nebulaRadius,
+        nebulaZ,
+      );
+      instance.fromQuaternion = new THREE.Quaternion().setFromEuler(
+        this.euler.set((h1 - 0.5) * 2.4, (h2 - 0.5) * 2.4, nebulaAngle),
+      );
+      instance.fromScale = instance.targetScale * 0.08;
+      instance.position.copy(instance.fromPosition);
+      instance.quaternion.copy(instance.fromQuaternion);
+      instance.scale = instance.fromScale;
+      instance.delay = h1 * 0.42;
+      instance.morphSpan = null;
+      instance.settled = false;
+    });
+    this.morph = { elapsed: 0, duration: 2.25, vortex: true, vortexDirection: 1, shellArc: false };
+    this.instanceDirty = true;
+    this.boundsDirty = true;
+    this.uploadInstanceMatrices();
+    if (this.mode === 'orbit' && !this.film) {
+      const restPos = new THREE.Vector3(...orbitPosition(this.camera.aspect));
+      const restQuat = this.group.quaternion.clone();
+      const restOff = restingViewFractions(this.camera.aspect);
+      const farPos = restPos.clone().multiplyScalar(1.22);
+      const startQuat = restQuat.clone().multiply(
+        new THREE.Quaternion().setFromEuler(this.euler.set(-0.08, -0.32, 0.04)),
+      );
+      this.camera.position.copy(farPos);
+      this.group.quaternion.copy(startQuat);
+      this.viewTransition = {
+        elapsed: 0,
+        duration: 2.25,
+        fromPosition: farPos,
+        position: restPos,
+        fromTarget: new THREE.Vector3(0, 0, 0),
+        target: new THREE.Vector3(0, 0, 0),
+        fromUp: new THREE.Vector3(0, 1, 0),
+        fromFov: this.camera.fov,
+        fov: 54,
+        fromRotation: startQuat,
+        rotation: restQuat,
+        fromOffset: restOff,
+        toOffset: restOff,
+      };
+    }
   },
 };

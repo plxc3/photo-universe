@@ -20,6 +20,7 @@ export function createCinemaExportController({
   setChromeInert,
   syncPlaying,
   noteStageActivity,
+  onActPortal,
 }) {
   const profiler = new FrameProfiler();
   let recorder = null;
@@ -274,15 +275,16 @@ export function createCinemaExportController({
       button.addEventListener('click', () => {
         const { universe, busy } = getState();
         if (!universe || busy || recorder) return;
+        ensureThresholdDismissed();
         if ($('gallery-dialog').open) closeDialogSmooth($('gallery-dialog'));
         const targetSec = Number(button.dataset.actSeek) || 0;
-        soundscape.playFocusPulse(true);
-        if (universe.film) {
-          universe.seekFilmLive(targetSec, { paused: false });
-        } else {
+        if (soundscape.playPortalWarp) soundscape.playPortalWarp(true);
+        else soundscape.playFocusPulse(true);
+        universe.portalToAct(targetSec);
+        if (!universe.film) {
           showScrollChrome(true);
-          universe.setScrollTimeline(targetSec);
         }
+        onActPortal?.(targetSec);
       });
     });
 

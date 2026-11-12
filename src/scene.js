@@ -21,6 +21,7 @@ import { pointerPickingMethods } from './pointer-picking.js';
 import { morphEngineMethods } from './morph-engine.js';
 import { focusStageMethods } from './focus-stage.js';
 import { scrollTheatreMethods } from './scroll-theatre.js';
+import { narrativeStageMethods } from './narrative-script.js';
 
 export { chromaticPhotoPool };
 
@@ -35,8 +36,8 @@ const TUNNEL_MOOD_PRIMARY = '#101826';
 const TUNNEL_MOOD_SECONDARY = '#1f1510';
 const IDLE_RING_RATES = [0.22, -0.17, 0.26, -0.14];
 
-const UniverseMixinBase = /** @type {new () => (typeof pointerPickingMethods & typeof morphEngineMethods & typeof focusStageMethods & typeof scrollTheatreMethods)} */ (class {});
-Object.assign(UniverseMixinBase.prototype, pointerPickingMethods, morphEngineMethods, focusStageMethods, scrollTheatreMethods);
+const UniverseMixinBase = /** @type {new () => (typeof pointerPickingMethods & typeof morphEngineMethods & typeof focusStageMethods & typeof scrollTheatreMethods & typeof narrativeStageMethods)} */ (class {});
+Object.assign(UniverseMixinBase.prototype, pointerPickingMethods, morphEngineMethods, focusStageMethods, scrollTheatreMethods, narrativeStageMethods);
 
 export class PhotoUniverse extends UniverseMixinBase {
   constructor(container, /** @type {Record<string, any>} */ options = {}) {
@@ -157,6 +158,14 @@ export class PhotoUniverse extends UniverseMixinBase {
     this.exportResolution = null;
     this._slowFrames = 0;
     this._postDegraded = false;
+    this.warpDriveActive = false;
+    this._warpIntensity = 0;
+    this._portalPulse = 0;
+    this._fluidUv = null;
+    this._fluidVel = null;
+    this._fluidTmpVel = null;
+    this._fluidEnergy = 0;
+    this.audioEnergy = 0;
     this.reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     this.pointerEnabled = !this.reducedMotion && window.matchMedia('(hover: hover) and (pointer: fine)').matches;
     this.darkroomPipeline = null;
@@ -205,10 +214,11 @@ export class PhotoUniverse extends UniverseMixinBase {
     this.renderer.domElement.addEventListener('pointermove', (event) => {
       this.movePointer(event);
       const filmLocked = Boolean(this.film && !this.film.interactive);
-      if (!this.pointerEnabled || this.dragging || filmLocked || event.buttons || event.pointerType === 'touch') return;
       const rect = this.renderer.domElement.getBoundingClientRect();
       const nx = clamp(((event.clientX - rect.left) / rect.width) * 2 - 1, -1, 1);
       const ny = clamp(((event.clientY - rect.top) / rect.height) * 2 - 1, -1, 1);
+      if (!filmLocked && !this.focusState) this._recordFluidPointer?.(nx, ny);
+      if (!this.pointerEnabled || this.dragging || filmLocked || event.buttons || event.pointerType === 'touch') return;
       if (this.focusState) {
         (this.focusPointerTarget ||= new THREE.Vector2()).set(nx, ny);
         return;
@@ -567,61 +577,7 @@ export class PhotoUniverse extends UniverseMixinBase {
     }
 
     if (options?.genesis && !this.reducedMotion && this.instances.length) {
-      this.euler ||= new THREE.Euler();
-      this.instances.forEach((instance, index) => {
-        const h1 = instance.vortexHash || deterministicHash(index);
-        const h2 = deterministicHash(index + 9973);
-        const h3 = deterministicHash(index + 4099);
-        const targetAngle = Math.atan2(instance.targetPosition.y, instance.targetPosition.x);
-        const nebulaRadius = 30 + 54 * h1;
-        const nebulaAngle = targetAngle - (2.1 + 1.5 * h2);
-        const nebulaZ = (h3 - 0.5) * 116;
-        instance.fromPosition = new THREE.Vector3(
-          Math.cos(nebulaAngle) * nebulaRadius,
-          Math.sin(nebulaAngle) * nebulaRadius,
-          nebulaZ,
-        );
-        instance.fromQuaternion = new THREE.Quaternion().setFromEuler(
-          this.euler.set((h1 - 0.5) * 2.4, (h2 - 0.5) * 2.4, nebulaAngle),
-        );
-        instance.fromScale = instance.targetScale * 0.08;
-        instance.position.copy(instance.fromPosition);
-        instance.quaternion.copy(instance.fromQuaternion);
-        instance.scale = instance.fromScale;
-        instance.delay = h1 * 0.42;
-        instance.morphSpan = null;
-        instance.settled = false;
-      });
-      this.morph = { elapsed: 0, duration: 2.25, vortex: true, vortexDirection: 1, shellArc: false };
-      this.instanceDirty = true;
-      this.boundsDirty = true;
-      this.uploadInstanceMatrices();
-      if (this.mode === 'orbit' && !this.film) {
-        const restPos = new THREE.Vector3(...orbitPosition(this.camera.aspect));
-        const restQuat = this.group.quaternion.clone();
-        const restOff = restingViewFractions(this.camera.aspect);
-        const farPos = restPos.clone().multiplyScalar(1.22);
-        const startQuat = restQuat.clone().multiply(
-          new THREE.Quaternion().setFromEuler(this.euler.set(-0.08, -0.32, 0.04)),
-        );
-        this.camera.position.copy(farPos);
-        this.group.quaternion.copy(startQuat);
-        this.viewTransition = {
-          elapsed: 0,
-          duration: 2.25,
-          fromPosition: farPos,
-          position: restPos,
-          fromTarget: new THREE.Vector3(0, 0, 0),
-          target: new THREE.Vector3(0, 0, 0),
-          fromUp: new THREE.Vector3(0, 1, 0),
-          fromFov: this.camera.fov,
-          fov: 54,
-          fromRotation: startQuat,
-          rotation: restQuat,
-          fromOffset: restOff,
-          toOffset: restOff,
-        };
-      }
+      this._initGenesisNebula();
     }
   }
 
@@ -671,6 +627,7 @@ export class PhotoUniverse extends UniverseMixinBase {
       ? Math.sin(Math.PI * clamp(this.morph.elapsed / Math.max(0.01, this.morph.duration), 0, 1))
       : 0;
     const tunnelFactor = this.photoUniforms?.uTunnelMode?.value || (this.mode === 'tunnel' ? 1 : 0);
+    const warpBoost = clamp((this._warpIntensity || 0) + (this._portalPulse || 0) * 0.65, 0, 1);
     const pan = this.film
       ? clamp((this.camera.position.x || 0) / 8, -0.75, 0.75)
       : clamp(this.pointerCurrent?.x || 0, -0.65, 0.65);
@@ -679,6 +636,7 @@ export class PhotoUniverse extends UniverseMixinBase {
       twist: this.tunnelTwist || 0,
       breath: this.stellationBreath || 0,
       morphImpulse,
+      warpBoost,
       focused: Boolean(this.focusState),
       pan,
     };
@@ -693,12 +651,21 @@ export class PhotoUniverse extends UniverseMixinBase {
         ? Math.sin(Math.PI * clamp(this.morph.elapsed / Math.max(0.01, this.morph.duration), 0, 1))
         : 0;
       const tunnelFactor = this.photoUniforms?.uTunnelMode?.value || 0;
+      const warpDrive = (this._warpIntensity || 0) * 0.92 + (this._portalPulse || 0) * 0.75;
       const warp = clamp(
-        tunnelFactor * (0.26 + (this.tunnelTwist || 0) / 7.5) + morphImpulse * 0.62,
+        tunnelFactor * (0.26 + (this.tunnelTwist || 0) / 7.5) + morphImpulse * 0.62 + warpDrive,
         0,
-        1.15,
+        1.45,
       );
-      this.darkroomPipeline.render(this.scene, this.camera, { time: timeSeconds, warp, focusBlur });
+      this.darkroomPipeline.render(this.scene, this.camera, {
+        time: timeSeconds,
+        warp,
+        focusBlur,
+        pointerUv: this._fluidUv || null,
+        pointerVel: this._fluidVel || null,
+        rippleEnergy: this._fluidEnergy || 0,
+        audioEnergy: this.audioEnergy || 0,
+      });
     } else {
       this.renderer.render(this.scene, this.camera);
     }
@@ -752,6 +719,7 @@ export class PhotoUniverse extends UniverseMixinBase {
     const targetBefore = (this._targetBefore ||= new THREE.Vector3()).copy(this.controls.target);
     const fovBefore = this.camera.fov;
     const filmLocked = Boolean(this.film && !this.film.interactive);
+    this._stepNarrativeField?.(dt);
 
     if (this.film && !this.focusState && !this.viewTransition) {
       if (!this.film.manual) this.updateFilm(time);
@@ -905,7 +873,7 @@ export class PhotoUniverse extends UniverseMixinBase {
       const reveal = this.photoUniforms?.uReveal?.value ?? 1;
       au.uTunnelFactor.value = tunnelFactor;
       au.uFocusFactor.value = focusFactor;
-      au.uIntensity.value = (0.095 + focusFactor * 0.16) * reveal;
+      au.uIntensity.value = (0.095 + focusFactor * 0.16 + (this.audioEnergy || 0) * 0.045) * reveal;
 
       const moodSourceIndex = this.focusState
         ? this.focusState.photoIndex
@@ -932,9 +900,12 @@ export class PhotoUniverse extends UniverseMixinBase {
     }
 
     if (this.dustField) {
-      this.dustField.uniforms.uTime.value = time * 0.001;
-      this.dustField.uniforms.uConveyor.value = this.tunnelConveyor || 0;
-      this.dustField.uniforms.uOpacity.value = (this.focusState ? 0.11 : 0.24) * (this.photoUniforms?.uReveal?.value ?? 1);
+      const du = this.dustField.uniforms;
+      du.uTime.value = time * 0.001;
+      du.uConveyor.value = this.tunnelConveyor || 0;
+      if (du.uWarpBoost) du.uWarpBoost.value = clamp((this._warpIntensity || 0) + (this._portalPulse || 0) * 0.6, 0, 1.2);
+      if (du.uAudioPulse) du.uAudioPulse.value = this.audioEnergy || 0;
+      du.uOpacity.value = (this.focusState ? 0.11 : 0.24) * (this.photoUniforms?.uReveal?.value ?? 1);
     }
 
     this.updateInstanceTransforms(dt);

@@ -1,0 +1,364 @@
+/* Active Theory Interactive Storytelling Layer:
+   - Precision Optical Corner Frame Ticks
+   - Live Camera Telemetry & Top Spatial Formation Portals
+   - Kinetic Cipher-Scramble Chapter Story Banner (#narrative-banner)
+   - 3D-to-Screen Projected Spatial Memory Beacons (#beacon-layer)
+   - 5-Act Interactive Chapter Portal Rail & Hold-to-Warp Propulsion Console
+   - Focus Exhibition Curatorial Story Note (#focus-story) */
+
+/* Precision Optical Corner Ticks */
+.hud-frame-ticks {
+  position: absolute;
+  inset: calc(var(--pad-y) * 0.62) calc(var(--pad-x) * 0.56);
+  pointer-events: none;
+  z-index: -1;
+}
+.hud-frame-ticks i {
+  position: absolute;
+  width: 9px;
+  height: 9px;
+  border-color: rgba(245, 241, 234, 0.16);
+  border-style: solid;
+  border-width: 0;
+  transition: border-color 0.4s ease, transform 0.48s var(--ease-out);
+}
+.hud-frame-ticks i:nth-child(1) { top: 0; left: 0; border-top-width: 1px; border-left-width: 1px; }
+.hud-frame-ticks i:nth-child(2) { top: 0; right: 0; border-top-width: 1px; border-right-width: 1px; }
+.hud-frame-ticks i:nth-child(3) { bottom: 0; left: 0; border-bottom-width: 1px; border-left-width: 1px; }
+.hud-frame-ticks i:nth-child(4) { bottom: 0; right: 0; border-bottom-width: 1px; border-right-width: 1px; }
+
+.warp-active .hud-frame-ticks i {
+  border-color: rgba(200, 162, 124, 0.68);
+  transform: scale(1.22);
+}
+
+/* Top-Left Live Optical Telemetry */
+.hud-telemetry {
+  font-size: 9.5px;
+  letter-spacing: 0.16em;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+  text-shadow: var(--ink-shadow);
+  opacity: 0.78;
+  user-select: none;
+  white-space: nowrap;
+  transition: color 0.28s ease;
+}
+.warp-active .hud-telemetry {
+  color: var(--accent);
+  opacity: 1;
+}
+
+/* Top-Center Spatial Formation Portals */
+.hud-tc {
+  top: calc(var(--pad-y) + env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  gap: 16px;
+}
+.portal-mode-btn {
+  gap: 5px;
+  font-size: 11px;
+  letter-spacing: 0.10em;
+}
+.portal-mode-btn i {
+  font-family: var(--brand);
+  font-style: italic;
+  font-size: 10.5px;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+  transition: color 0.22s ease;
+}
+.portal-mode-btn:hover i,
+.portal-mode-btn[aria-pressed='true'] i {
+  color: var(--accent);
+}
+
+/* Center-Stage Ephemeral Chapter Story Banner (#narrative-banner) */
+.narrative-banner {
+  position: absolute;
+  top: clamp(82px, 15.5vh, 148px);
+  left: 50%;
+  transform: translate3d(-50%, 8px, 0);
+  z-index: 6;
+  width: min(560px, 86vw);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 6px;
+  pointer-events: none;
+  user-select: none;
+  opacity: 0;
+  --act-accent: var(--accent);
+  background: radial-gradient(
+    ellipse 60% 56% at 50% 50%,
+    rgba(2, 2, 4, 0.64) 0%,
+    rgba(2, 2, 4, 0.22) 64%,
+    transparent 100%
+  );
+  padding: 14px 20px;
+  transition: opacity 0.85s var(--ease-out), transform 0.92s var(--ease-out);
+}
+.narrative-banner.is-visible {
+  opacity: 1;
+  transform: translate3d(-50%, 0, 0);
+}
+.threshold-locked .narrative-banner,
+.focus-active .narrative-banner,
+.clean .narrative-banner,
+.recording-active .narrative-banner {
+  opacity: 0 !important;
+  transition: opacity 0.22s var(--ease-out), transform 0.26s var(--ease-out);
+}
+.banner-code {
+  font-size: 9.5px;
+  letter-spacing: 0.28em;
+  color: var(--act-accent);
+  text-shadow: var(--ink-shadow);
+  font-variant-numeric: tabular-nums;
+}
+.banner-title {
+  margin: 2px 0 3px;
+  font-family: var(--brand);
+  font-weight: 380;
+  font-size: clamp(22px, 2.5vw, 32px);
+  letter-spacing: 0.12em;
+  color: var(--text);
+  text-shadow: 0 4px 26px rgba(0, 0, 0, 0.94), var(--ink-shadow);
+}
+.banner-verse {
+  margin: 0;
+  font-size: clamp(12px, 1.05vw, 13.5px);
+  line-height: 1.65;
+  letter-spacing: 0.06em;
+  color: rgba(245, 241, 234, 0.88);
+  text-shadow: var(--ink-shadow);
+  min-height: 1.65em;
+}
+.banner-directive {
+  margin-top: 3px;
+  font-size: 9.5px;
+  letter-spacing: 0.20em;
+  color: var(--muted);
+  opacity: 0.78;
+  text-shadow: var(--ink-shadow);
+  min-height: 1.2em;
+}
+
+/* 3D-to-Screen Projected Spatial Memory Beacons (#beacon-layer) */
+.beacon-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+  overflow: hidden;
+}
+.spatial-beacon {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  margin: -14px 0 0 -14px;
+  padding: 6px 10px 6px 6px;
+  pointer-events: auto;
+  will-change: transform, opacity;
+  --beacon-accent: var(--accent);
+  background: radial-gradient(
+    ellipse at 36% 50%,
+    rgba(2, 2, 4, 0.72) 0%,
+    rgba(2, 2, 4, 0.34) 68%,
+    transparent 100%
+  );
+  transition: color 0.22s ease;
+}
+.beacon-diamond {
+  position: relative;
+  width: 12px;
+  height: 12px;
+  flex: none;
+  border: 1px solid var(--beacon-accent);
+  transform: rotate(45deg);
+  box-shadow: 0 0 12px rgba(0, 0, 0, 0.85);
+  transition: transform 0.34s var(--ease-out), background 0.24s ease, box-shadow 0.28s ease;
+}
+.beacon-diamond::before {
+  content: '';
+  position: absolute;
+  inset: 3px;
+  background: var(--beacon-accent);
+  box-shadow: 0 0 8px var(--beacon-accent);
+}
+.beacon-diamond::after {
+  content: '';
+  position: absolute;
+  inset: -4px;
+  border: 1px solid var(--beacon-accent);
+  opacity: 0;
+  animation: beacon-ping 2.8s var(--ease-out) infinite;
+}
+@keyframes beacon-ping {
+  0% { transform: scale(0.75); opacity: 0.62; }
+  100% { transform: scale(1.85); opacity: 0; }
+}
+.beacon-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  text-align: left;
+  text-shadow: var(--ink-shadow);
+}
+.beacon-code {
+  font-size: 8.5px;
+  letter-spacing: 0.20em;
+  color: var(--beacon-accent);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+.beacon-title {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: rgba(245, 241, 234, 0.90);
+  white-space: nowrap;
+  line-height: 1.2;
+  transition: color 0.2s ease, transform 0.28s var(--ease-out);
+}
+.spatial-beacon[data-side='left'] {
+  flex-direction: row-reverse;
+  padding: 6px 6px 6px 10px;
+}
+.spatial-beacon[data-side='left'] .beacon-meta {
+  align-items: flex-end;
+  text-align: right;
+}
+.spatial-beacon:hover .beacon-diamond,
+.spatial-beacon:focus-visible .beacon-diamond {
+  transform: rotate(45deg) scale(1.26);
+  background: rgba(200, 162, 124, 0.18);
+  box-shadow: 0 0 16px var(--beacon-accent);
+}
+.spatial-beacon:hover .beacon-title,
+.spatial-beacon:focus-visible .beacon-title {
+  color: #ffffff;
+  transform: translateX(2px);
+}
+
+/* Bottom-Center 5-Act Interactive Chapter Portal Rail */
+.hud-bc {
+  bottom: calc(var(--pad-y) + env(safe-area-inset-bottom));
+  left: 50%;
+  transform: translateX(-50%);
+  gap: 14px;
+}
+.chapter-portal-btn {
+  gap: 5px;
+  font-size: 11px;
+  letter-spacing: 0.09em;
+}
+.chapter-portal-btn i {
+  font-family: var(--brand);
+  font-style: italic;
+  font-size: 11.5px;
+  color: var(--faint);
+  transition: color 0.22s ease;
+}
+.chapter-portal-btn[aria-current='true'] i,
+.chapter-portal-btn:hover i {
+  color: var(--accent);
+}
+.chapter-rail-tick {
+  width: 10px;
+  height: 1px;
+  background: rgba(245, 241, 234, 0.14);
+  align-self: center;
+  flex: none;
+}
+
+/* Hold-to-Warp ("引力跃迁") Tactile Trigger */
+.warp-trigger {
+  font-size: 11.5px;
+  letter-spacing: 0.09em;
+  color: var(--text);
+  gap: 5px;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+}
+.warp-glyph {
+  display: inline-block;
+  color: var(--accent);
+  font-size: 12px;
+  line-height: 1;
+  transition: transform 0.36s var(--ease-out), text-shadow 0.28s ease;
+}
+.warp-trigger:hover .warp-glyph,
+.warp-trigger[aria-pressed='true'] .warp-glyph {
+  transform: rotate(90deg) scale(1.22);
+  text-shadow: 0 0 14px var(--accent);
+}
+.warp-trigger[aria-pressed='true'] {
+  color: var(--accent);
+}
+
+/* Focus Exhibition Curatorial Story Note (#focus-story) */
+.focus-story {
+  margin: 3px 0 0;
+  font-size: 11.5px;
+  line-height: 1.55;
+  letter-spacing: 0.05em;
+  color: rgba(245, 241, 234, 0.78);
+  max-width: 46ch;
+  text-shadow: var(--ink-shadow);
+}
+
+/* Responsive Multi-Tier Stage Layout (Zero Overlap on Tablet & Mobile) */
+@media (max-width: 1240px) {
+  .hud-telemetry {
+    display: none;
+  }
+  .chapter-rail-tick {
+    display: none;
+  }
+  .hud-bc {
+    gap: 11px;
+  }
+}
+
+@media (max-width: 1120px) {
+  .hud-tc {
+    top: calc(var(--pad-y) + env(safe-area-inset-top) + 32px);
+    left: var(--pad-x);
+    transform: none;
+    gap: 14px;
+  }
+  .hud-bc {
+    bottom: calc(var(--pad-y) + env(safe-area-inset-bottom) + 32px);
+    left: var(--pad-x);
+    right: var(--pad-x);
+    transform: none;
+    justify-content: space-between;
+  }
+  .narrative-banner {
+    top: clamp(114px, 17.5vh, 162px);
+    padding: 10px 14px;
+  }
+}
+
+@media (max-width: 560px) {
+  .hud-frame-ticks {
+    display: none;
+  }
+  .portal-mode-btn i {
+    display: none;
+  }
+  .banner-directive {
+    display: none;
+  }
+  .focus-story {
+    font-size: 11px;
+    max-width: 100%;
+  }
+}

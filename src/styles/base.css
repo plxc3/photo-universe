@@ -244,6 +244,21 @@ button:focus-visible, a:focus-visible, input:focus-visible {
     border-radius: 2px;
     border-color: var(--reticle-accent);
   }
+  .cursor-reticle[data-state='beacon'] .reticle-frame {
+    transform: rotate(45deg) scale(1.32);
+    border-radius: 1px;
+    border-color: var(--reticle-accent);
+    box-shadow: 0 0 14px rgba(200, 162, 124, 0.35);
+  }
+  .cursor-reticle[data-state='warp'] .reticle-frame {
+    transform: scale(1.88);
+    border-color: var(--accent);
+    box-shadow: 0 0 22px rgba(200, 162, 124, 0.55), inset 0 0 10px rgba(200, 162, 124, 0.25);
+  }
+  .cursor-reticle[data-state='drag'] .reticle-frame {
+    transform: scale(0.76);
+    border-color: rgba(200, 162, 124, 0.72);
+  }
   .cursor-reticle[data-state='ui'] .reticle-frame {
     transform: scale(0.45);
     border-color: rgba(245, 241, 234, 0.12);
@@ -263,7 +278,9 @@ button:focus-visible, a:focus-visible, input:focus-visible {
     text-shadow: var(--ink-shadow);
     transition: opacity 0.22s ease, transform 0.3s var(--ease-out);
   }
-  .cursor-reticle[data-state='photo'] .reticle-tag {
+  .cursor-reticle[data-state='photo'] .reticle-tag,
+  .cursor-reticle[data-state='beacon'] .reticle-tag,
+  .cursor-reticle[data-state='warp'] .reticle-tag {
     opacity: 1;
     transform: translate3d(0, -50%, 0);
   }

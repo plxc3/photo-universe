@@ -16,6 +16,8 @@ import { createDialogMotion, createGalleryController } from './gallery-ui.js';
 import { createWheelStepGate, createReticleController } from './reticle.js';
 import { createFocusUiController } from './focus-ui.js';
 import { createCinemaExportController } from './cinema-export-ui.js';
+import { createNarrativeHudController } from './narrative-hud.js';
+import { actForSeconds } from './narrative-script.js';
 
 /** @param {string} id @returns {any} */
 const $ = (id) => document.getElementById(id);
@@ -150,8 +152,9 @@ function syncFilmReadout(seconds) {
   const ratio = Math.max(0, Math.min(1, clamped / 29.65));
   $('app').style.setProperty('--timeline-progress', ratio.toFixed(4));
   $('timeline-scrub-zone')?.setAttribute('aria-valuenow', clamped.toFixed(1));
-  document.querySelectorAll('[data-act-seek]').forEach((btn, idx) => {
-    if (idx === actIdx) btn.setAttribute('aria-current', 'true');
+  document.querySelectorAll('[data-act-seek]').forEach((btn) => {
+    const btnActIdx = actIndexForTime((Number(btn.getAttribute('data-act-seek')) || 0) + 0.05);
+    if (btnActIdx === actIdx) btn.setAttribute('aria-current', 'true');
     else btn.removeAttribute('aria-current');
   });
 }
@@ -161,8 +164,13 @@ function resetStageReadout(mode = universe?.mode || 'orbit') {
   const label = found >= 0 ? FORMATIONS[found].label : '星环';
   if ($('act-roman')) $('act-roman').textContent = ROMAN_ACTS[Math.max(0, found)] || 'I';
   $('film-act').textContent = mode === 'orbit' ? '序幕 · 星环' : '形态 · ' + label;
-  $('film-time').textContent = coarsePointerQuery.matches ? '轻点漫游 · 拖动环视' : '滚轮叙事 · 拖动环视';
+  $('film-time').textContent = coarsePointerQuery.matches ? '轻点漫游 · 拖动环视' : '滚轮叙事 · 按住跃迁';
   $('app').style.setProperty('--timeline-progress', '0');
+  document.querySelectorAll('[data-act-seek]').forEach((btn) => {
+    const btnActIdx = actIndexForTime((Number(btn.getAttribute('data-act-seek')) || 0) + 0.05);
+    if (btnActIdx === 0) btn.setAttribute('aria-current', 'true');
+    else btn.removeAttribute('aria-current');
+  });
 }
 
 function syncSoundUI() {
@@ -198,6 +206,7 @@ function enterArchiveFromThreshold() {
     }, reducedMotion.matches ? 0 : 1080);
   }
   noteStageActivity();
+  narrativeHud?.revealAct(0, { force: true });
   return true;
 }
 
@@ -273,6 +282,21 @@ const gallery = createGalleryController({
   albumVault,
 });
 
+const narrativeHud = createNarrativeHudController({
+  $,
+  getState: getAppState,
+  ensureThresholdDismissed: () => { if (!thresholdDismissed) enterArchiveFromThreshold(); },
+  wakeAudio,
+  showScrollChrome,
+  onSelectBeacon: (beacon) => {
+    focusUi.showPhoto(beacon.photoIndex, beacon.instanceIndex, 1, beacon.story);
+  },
+  reticle,
+  soundscape,
+  reducedMotion,
+  hasOpenDialog,
+});
+
 const filmExport = createCinemaExportController({
   $,
   inspecting,
@@ -288,6 +312,9 @@ const filmExport = createCinemaExportController({
   setChromeInert,
   syncPlaying,
   noteStageActivity,
+  onActPortal: (sec) => {
+    narrativeHud.revealAct(actForSeconds(sec + 0.05).index, { force: true });
+  },
 });
 
 window.addEventListener('pointerdown', () => { wakeAudio(); noteStageActivity(); }, { passive: true });
@@ -359,15 +386,15 @@ function releaseAtlasCanvases(atlases) {
 }
 
 function setControlsDisabled(value) {
-  for (const id of ['import', 'import-quick', 'record', 'demo', 'film', 'film-quick', 'collection', 'play', 'speed-cycle', 'reset']) {
+  for (const id of ['import', 'import-quick', 'record', 'demo', 'film', 'film-quick', 'warp-hold', 'collection', 'play', 'speed-cycle', 'reset']) {
     const el = $(id);
     if (el) el.disabled = value;
   }
-  for (const id of ['record', 'film', 'film-quick', 'play', 'speed-cycle', 'reset']) {
+  for (const id of ['record', 'film', 'film-quick', 'warp-hold', 'play', 'speed-cycle', 'reset']) {
     const el = $(id);
     if (el) el.disabled = value || !universe;
   }
-  /** @type {NodeListOf<HTMLButtonElement>} */ (document.querySelectorAll('[data-mode]')).forEach((button) => {
+  /** @type {NodeListOf<HTMLButtonElement>} */ (document.querySelectorAll('[data-mode], [data-act-seek]')).forEach((button) => {
     button.disabled = value || !universe;
   });
   $('scene').setAttribute('aria-busy', String(value));
@@ -449,6 +476,7 @@ async function importPhotos(files, options = {}) {
     yearChapters = buildYearChapters(photos, validPhotoIndices);
     gallery.resetChapter();
     selectedPhoto = 0;
+    narrativeHud.rebuildBeacons();
     releasePhotos(oldPhotos);
     releaseAtlasCanvases(oldFallbackAtlases);
 
@@ -473,6 +501,7 @@ async function importPhotos(files, options = {}) {
     } else {
       thresholdDismissed = true;
       $('app').classList.remove('threshold-locked');
+      narrativeHud.revealAct(0, { force: true });
     }
 
     if (files && !options.restoredFromVault && albumVault.enabled) {
@@ -572,7 +601,8 @@ try {
     onFilmEnd: filmExport.endFilm,
     onContextLost: contextLost,
     onFrame: (time) => {
-      reticle.updateFrame(time);
+      narrativeHud.updateFrame(time);
+      reticle.updateFrame(time, universe);
       filmExport.onFrame(time);
       if (universe) soundscape.update(universe.getAudioModulation());
     },
@@ -585,6 +615,7 @@ try {
       universe,
       soundscape,
       albumVault,
+      narrativeHud,
       enterArchive: enterArchiveFromThreshold,
       openGallery: gallery.openGallery,
       showPhoto: focusUi.showPhoto,
@@ -695,6 +726,7 @@ $('gallery-next').addEventListener('click', () => gallery.stepPage(1));
 
 focusUi.bindFallbackModalEvents();
 filmExport.bindFilmAndExportEvents();
+narrativeHud.bindEvents();
 
 /** @type {NodeListOf<HTMLButtonElement>} */ (document.querySelectorAll('[data-mode]')).forEach((button) => {
   button.addEventListener('click', () => {
@@ -809,8 +841,15 @@ document.addEventListener('keydown', (event) => {
     return;
   }
   if (targetEl?.closest('input,textarea,select,[role="slider"]')) return;
-  if (event.code === 'Space' && !targetEl?.closest('button,a')) { event.preventDefault(); togglePlaying(); return; }
+  if (event.code === 'Space' && !targetEl?.closest('button,a')) {
+    event.preventDefault();
+    if (!event.repeat && !busy && !filmExport.isRecording()) {
+      narrativeHud.setSpaceWarp(true);
+    }
+    return;
+  }
   const lowerKey = event.key.toLowerCase();
+  if (lowerKey === 'p') { togglePlaying(); return; }
   if (lowerKey === 'h') { toggleClean(); return; }
   if (lowerKey === 'm') { $('sound-toggle')?.click(); return; }
   if (lowerKey === 'f' && !busy && !filmExport.isRecording()) { $('film-quick')?.click(); return; }
@@ -823,6 +862,12 @@ document.addEventListener('keydown', (event) => {
       soundscape.playFocusPulse(true);
       universe.setFormation(/** @type {'orbit'|'tunnel'|'sphere'|'helix'} */ (targetMode));
     }
+  }
+});
+
+document.addEventListener('keyup', (event) => {
+  if (event.code === 'Space') {
+    narrativeHud.setSpaceWarp(false);
   }
 });
 
@@ -851,6 +896,7 @@ window.addEventListener('pagehide', (event) => {
   clearTimeout(toastTimer);
   clearTimeout(loaderHideTimer);
   clearTimeout(idleStageTimer);
+  narrativeHud.dispose();
   focusUi.dispose();
   filmExport.dispose(event.persisted);
   if (event.persisted) return;
