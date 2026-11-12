@@ -92,7 +92,7 @@ export function createCinemaExportController({
     if (active) {
       $('app').classList.remove('scroll-active');
       filmFocus = document.activeElement;
-      $('stop-film').textContent = recorder?.state === 'recording' ? '结束录制' : '结束漫游';
+      $('stop-film').textContent = '↺';
       $('stop-film').setAttribute('aria-label', recorder?.state === 'recording' ? '结束录制' : '结束漫游');
     }
     const fq = $('film-quick');
@@ -100,7 +100,7 @@ export function createCinemaExportController({
       fq.setAttribute('aria-pressed', String(active));
       fq.setAttribute('aria-label', active ? '结束 30 秒交互漫游' : '开启 30 秒交互漫游');
       if ($('film-quick-glyph')) $('film-quick-glyph').textContent = active ? '■' : '▸';
-      if ($('film-quick-label')) $('film-quick-label').textContent = active ? '结束漫游' : '开启漫游';
+      if ($('film-quick-label')) $('film-quick-label').textContent = active ? '停止' : '漫游';
     }
     $('app').classList.toggle('film-active', active);
     $('stop-film').hidden = !active && !$('app').classList.contains('scroll-active');
@@ -293,7 +293,7 @@ export function createCinemaExportController({
       if (getState().universe?.film) leaveFilm();
       else playFilm();
     });
-    for (const el of [$('act-roman'), $('film-act'), $('film-time')]) {
+    for (const el of [$('act-pill-trigger'), $('act-roman'), $('film-act'), $('film-time')]) {
       el?.addEventListener('click', () => {
         const { universe, busy } = getState();
         if (!universe || busy || universe.film || universe.focusState) return;

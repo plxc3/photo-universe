@@ -24,21 +24,20 @@
   </head>
   <body>
     <main id="app">
-      <div id="scene" aria-label="三维照片空间。滚动推进五幕时空叙事，按住跃迁穿梭，拖动环视偏航，点击信标或照片展开全画幅液态暗房展映。"></div>
-
-      <div id="beacon-layer" class="beacon-layer chrome" aria-label="三维空间记忆信标"></div>
+      <div id="scene" aria-label="三维照片空间。移动光标激起流体光带，滚轮推进五幕叙事，长按空格跃迁，拖拽环视，点击底片展开全画幅展映。"></div>
 
       <div id="narrative-banner" class="narrative-banner" aria-live="polite" aria-atomic="true">
-        <span id="banner-code" class="banner-code">ACT 01 // ORBITAL HALO</span>
-        <h2 id="banner-title" class="banner-title">微尘星环</h2>
-        <p id="banner-verse" class="banner-verse">每一张快门，都是从时间洪流里截获的一粒光子。</p>
-        <span id="banner-directive" class="banner-directive">滚轮推进叙事 · 按住跃迁穿梭 · 点选信标唤醒记忆</span>
+        <span id="banner-code" class="banner-code">01 //</span>
+        <span id="banner-verse" class="banner-verse">每一张快门，都是从时间洪流里截获的一粒光子。</span>
       </div>
 
       <div id="cursor-reticle" class="cursor-reticle" aria-hidden="true">
-        <span class="reticle-frame"></span>
+        <svg class="reticle-svg" viewBox="0 0 36 36" fill="none">
+          <circle class="reticle-track" cx="18" cy="18" r="15" />
+          <circle class="reticle-arc" cx="18" cy="18" r="15" />
+        </svg>
+        <i class="reticle-center"></i>
         <span class="reticle-tag">
-          <i class="reticle-dot"></i>
           <span id="reticle-number" class="reticle-number"></span>
           <span id="reticle-label" class="reticle-label"></span>
         </span>
@@ -62,74 +61,57 @@
       <span class="sr-only" id="particle-count"></span>
       <span class="sr-only" id="mode-name" aria-live="polite">星环</span>
 
-      <section id="stage-hud" class="stage-hud chrome" aria-label="暗房舞台导览">
-        <div class="hud-frame-ticks" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
-
+      <section id="stage-hud" class="stage-hud chrome" aria-label="空间导航">
         <div class="hud-corner hud-tl">
           <h1 class="brand">
-            <button id="brand" type="button" class="text-link brand-link" aria-label="Memoria，重置视角">
-              <span class="brand-word">Memoria</span>
+            <button id="brand" type="button" class="at-brand-btn" aria-label="MEMORIA，重置视角">
+              <i class="at-live-dot" aria-hidden="true"></i>
+              <span class="brand-word">MEMORIA</span>
             </button>
           </h1>
-          <span id="hud-telemetry" class="hud-telemetry" aria-hidden="true">ORBIT // R 84.0 · 54°</span>
         </div>
-
-        <nav class="hud-corner hud-tc" aria-label="空间拓扑形态直达">
-          <button type="button" data-mode="orbit" aria-pressed="true" class="text-link portal-mode-btn"><i>01</i><span>星环</span></button>
-          <button type="button" data-mode="tunnel" aria-pressed="false" class="text-link portal-mode-btn"><i>02</i><span>隧道</span></button>
-          <button type="button" data-mode="sphere" aria-pressed="false" class="text-link portal-mode-btn"><i>03</i><span>星球</span></button>
-          <button type="button" data-mode="helix" aria-pressed="false" class="text-link portal-mode-btn"><i>04</i><span>螺旋</span></button>
-        </nav>
 
         <div class="hud-corner hud-tr">
           <button
             id="sound-toggle"
             type="button"
-            class="text-link sound-whisper"
+            class="at-icon-btn sound-whisper"
             aria-label="静音空间音效"
             aria-pressed="true"
           >
             <span class="sound-eq" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
-            <span class="whisper-label">声景</span>
           </button>
-          <span class="hud-sep" aria-hidden="true">·</span>
-          <button id="collection" type="button" class="text-link index-whisper" aria-label="打开暗房索引">
-            <span class="whisper-label">索引</span>
-            <span id="photo-count" class="whisper-num" aria-live="polite">0120</span>
+          <button id="import-quick" type="button" class="at-top-link" aria-label="导入本地照片">+ 导入</button>
+          <button id="collection" type="button" class="at-index-pill" aria-label="打开暗房索引">
+            <span>INDEX</span>
+            <span id="photo-count" class="at-index-count" aria-live="polite">0120</span>
           </button>
-          <span class="hud-sep" aria-hidden="true">·</span>
-          <button id="import-quick" type="button" class="text-link" aria-label="导入本地照片">导入相册</button>
         </div>
 
-        <div class="hud-corner hud-bl">
-          <span id="act-roman" class="act-roman">I</span>
-          <span id="film-act" class="act-name">序幕 · 星环</span>
-          <span id="film-time" class="act-time">滚轮叙事 · 拖动环视</span>
-          <button id="stop-film" type="button" class="text-link stop-whisper" hidden>归位</button>
-        </div>
-
-        <nav id="narrative-dock" class="hud-corner hud-bc" aria-label="五幕互动叙事章节">
-          <button type="button" data-act-seek="0" aria-current="true" class="text-link chapter-portal-btn"><i>I</i><span>序幕</span></button>
-          <span class="chapter-rail-tick" aria-hidden="true"></span>
-          <button type="button" data-act-seek="5.8" class="text-link chapter-portal-btn"><i>II</i><span>坍缩</span></button>
-          <span class="chapter-rail-tick" aria-hidden="true"></span>
-          <button type="button" data-act-seek="13.5" class="text-link chapter-portal-btn"><i>III</i><span>回廊</span></button>
-          <span class="chapter-rail-tick" aria-hidden="true"></span>
-          <button type="button" data-act-seek="22.8" class="text-link chapter-portal-btn"><i>IV</i><span>显影</span></button>
-          <span class="chapter-rail-tick" aria-hidden="true"></span>
-          <button type="button" data-act-seek="27.2" class="text-link chapter-portal-btn"><i>V</i><span>晶格</span></button>
-        </nav>
-
-        <div class="hud-corner hud-br">
-          <button id="warp-hold" type="button" class="text-link warp-trigger" aria-pressed="false" aria-label="按住启动引力跃迁（或按住空格键）">
-            <span class="warp-glyph" aria-hidden="true">⟡</span>
-            <span>按住跃迁</span>
+        <div id="at-console" class="hud-corner at-console">
+          <button id="act-pill-trigger" type="button" class="at-console-act" aria-label="开启交互漫游">
+            <span id="act-roman" class="at-act-num">01</span>
+            <span id="film-act" class="at-act-name">微尘星环</span>
           </button>
-          <span class="hud-sep" aria-hidden="true">·</span>
-          <button id="film-quick" type="button" class="text-link accent-link roam-trigger" aria-pressed="false" aria-label="开启 30 秒交互漫游">
+          <span class="at-console-sep" aria-hidden="true"></span>
+          <nav id="narrative-dock" class="at-seg-rail" aria-label="五幕时空节点">
+            <button type="button" data-act-seek="0" aria-current="true" class="at-seg" title="01 · 微尘星环" aria-label="跳转至第一幕 微尘星环"><i></i></button>
+            <button type="button" data-act-seek="5.8" class="at-seg" title="02 · 引力坍缩" aria-label="跳转至第二幕 引力坍缩"><i></i></button>
+            <button type="button" data-act-seek="13.5" class="at-seg" title="03 · 回声长廊" aria-label="跳转至第三幕 回声长廊"><i></i></button>
+            <button type="button" data-act-seek="22.8" class="at-seg" title="04 · 暗房显影" aria-label="跳转至第四幕 暗房显影"><i></i></button>
+            <button type="button" data-act-seek="27.2" class="at-seg" title="05 · 永恒晶格" aria-label="跳转至第五幕 永恒晶格"><i></i></button>
+          </nav>
+          <span class="at-console-sep" aria-hidden="true"></span>
+          <button id="warp-hold" type="button" class="at-chip warp-trigger" aria-pressed="false" aria-label="按住启动引力跃迁（或长按空格）">
+            <i class="warp-dot" aria-hidden="true"></i>
+            <span>跃迁</span>
+          </button>
+          <button id="film-quick" type="button" class="at-chip roam-trigger" aria-pressed="false" aria-label="开启 30 秒交互漫游">
             <span id="film-quick-glyph" class="roam-glyph" aria-hidden="true">▸</span>
-            <span id="film-quick-label">开启漫游</span>
+            <span id="film-quick-label">漫游</span>
           </button>
+          <button id="stop-film" type="button" class="at-chip at-reset-chip" hidden aria-label="归位">↺</button>
+          <span id="film-time" class="sr-only"></span>
         </div>
       </section>
 
@@ -165,11 +147,11 @@
           <progress id="loading-progress" class="sr-only" max="100" value="0"></progress>
         </div>
         <div class="threshold-veil" id="threshold-veil">
-          <span class="threshold-kicker">SILVER HALIDE ARCHIVE · <em id="threshold-count">0120</em> PRINTS</span>
-          <p class="threshold-title" aria-hidden="true">Memoria</p>
+          <span class="threshold-kicker">WEBGL INTERACTIVE ARCHIVE // <em id="threshold-count">0120</em></span>
+          <p class="threshold-title" aria-hidden="true">MEMORIA</p>
           <button type="button" id="threshold-enter" class="threshold-enter">
-            <span class="threshold-line" aria-hidden="true"></span>
-            <span class="threshold-prompt">轻滚或点击进入暗房</span>
+            <i class="threshold-dot" aria-hidden="true"></i>
+            <span class="threshold-prompt">ENTER EXPERIENCE · 开启体验</span>
           </button>
         </div>
       </div>

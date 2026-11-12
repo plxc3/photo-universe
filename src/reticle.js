@@ -63,18 +63,20 @@ export function createReticleController({ reticleEl, numberEl, labelEl, finePoin
 
   const syncModeState = (universe) => {
     if (!reticleEl) return;
-    if (universe?.warpDriveActive) {
+    if (universe?.warpDriveActive || (universe?._warpIntensity || 0) > 0.08) {
       reticleEl.dataset.state = 'warp';
-      reticleEl.style.setProperty('--reticle-accent', '#e2c799');
+      reticleEl.style.setProperty('--reticle-accent', '#8ab4ff');
+      reticleEl.style.setProperty('--warp-progress', (universe?._warpIntensity || 0).toFixed(3));
       if (numberEl) numberEl.textContent = 'WARP';
-      if (labelEl) labelEl.textContent = '引力跃迁推进中';
+      if (labelEl) labelEl.textContent = '';
       return;
     }
+    reticleEl.style.setProperty('--warp-progress', '0');
     if (universe?.dragging) {
       reticleEl.dataset.state = 'drag';
-      reticleEl.style.setProperty('--reticle-accent', '#d8c5a8');
-      if (numberEl) numberEl.textContent = '360°';
-      if (labelEl) labelEl.textContent = '自由偏航环视';
+      reticleEl.style.setProperty('--reticle-accent', '#9ab4ff');
+      if (numberEl) numberEl.textContent = '';
+      if (labelEl) labelEl.textContent = '';
       return;
     }
     if (hoveredBeacon) {
@@ -154,11 +156,10 @@ export function createReticleController({ reticleEl, numberEl, labelEl, finePoin
         reticleEl.style.setProperty('--reticle-accent', photo.accentHex || '#c8a27c');
         const pos = validPhotoIndices.indexOf(photoIndex);
         if (numberEl) {
-          numberEl.textContent = pos >= 0 ? 'No. ' + String(pos + 1).padStart(3, '0') : '';
+          numberEl.textContent = pos >= 0 ? String(pos + 1).padStart(3, '0') + ' //' : '';
         }
         if (labelEl) {
-          const baseName = photo.title || photo.author || photo.name;
-          labelEl.textContent = photo.capturedYear ? baseName + ' · ' + photo.capturedYear : baseName;
+          labelEl.textContent = photo.title || photo.author || photo.name;
         }
       } else {
         hoveredPhoto = false;

@@ -46,7 +46,7 @@ const SPEED_PRESETS = [
   { speed: 0.7, label: '速率：适中' },
   { speed: 1.25, label: '速率：轻快' },
 ];
-const ROMAN_ACTS = ['I', 'II', 'III', 'IV', 'V'];
+const PAD_ACTS = ['01', '02', '03', '04', '05'];
 const SCENE_POSITIONS = 3000;
 const IDLE_STAGE_MS = 7500;
 
@@ -123,11 +123,11 @@ function noteStageActivity() {
 }
 
 function actLabelForTime(seconds) {
-  if (seconds < 3.6) return '序幕 · 星环';
-  if (seconds < 7.8) return '坍缩 · 漩涡';
-  if (seconds < 21.8) return '走廊 · 螺旋';
-  if (seconds < 25.4) return '重组 · 门廊';
-  return '终章 · 晶格';
+  if (seconds < 3.6) return '微尘星环';
+  if (seconds < 7.8) return '引力坍缩';
+  if (seconds < 21.8) return '回声长廊';
+  if (seconds < 25.4) return '暗房显影';
+  return '永恒晶格';
 }
 
 function actIndexForTime(seconds) {
@@ -141,13 +141,10 @@ function actIndexForTime(seconds) {
 function syncFilmReadout(seconds) {
   const clamped = Math.max(0, Math.min(30, Number(seconds) || 0));
   const actIdx = actIndexForTime(clamped);
-  if ($('act-roman')) $('act-roman').textContent = ROMAN_ACTS[actIdx];
+  if ($('act-roman')) $('act-roman').textContent = PAD_ACTS[actIdx];
   $('film-act').textContent = actLabelForTime(clamped);
   const timeText = '00:' + String(Math.floor(clamped)).padStart(2, '0') + ' / 00:30';
-  const liveInteractive = Boolean(universe?.film?.interactive && !filmExport?.isRecording?.());
-  $('film-time').textContent = liveInteractive
-    ? timeText + (coarsePointerQuery.matches ? ' · 可拖动 · 点按' : ' · 拖拽环视 · 点按凝视')
-    : timeText;
+  $('film-time').textContent = timeText;
   $('film-progress').value = clamped;
   const ratio = Math.max(0, Math.min(1, clamped / 29.65));
   $('app').style.setProperty('--timeline-progress', ratio.toFixed(4));
@@ -162,9 +159,9 @@ function syncFilmReadout(seconds) {
 function resetStageReadout(mode = universe?.mode || 'orbit') {
   const found = FORMATIONS.findIndex((f) => f.id === mode);
   const label = found >= 0 ? FORMATIONS[found].label : '星环';
-  if ($('act-roman')) $('act-roman').textContent = ROMAN_ACTS[Math.max(0, found)] || 'I';
-  $('film-act').textContent = mode === 'orbit' ? '序幕 · 星环' : '形态 · ' + label;
-  $('film-time').textContent = coarsePointerQuery.matches ? '轻点漫游 · 拖动环视' : '滚轮叙事 · 按住跃迁';
+  if ($('act-roman')) $('act-roman').textContent = PAD_ACTS[Math.max(0, found)] || '01';
+  $('film-act').textContent = mode === 'orbit' ? '微尘星环' : '拓扑 · ' + label;
+  $('film-time').textContent = '';
   $('app').style.setProperty('--timeline-progress', '0');
   document.querySelectorAll('[data-act-seek]').forEach((btn) => {
     const btnActIdx = actIndexForTime((Number(btn.getAttribute('data-act-seek')) || 0) + 0.05);
@@ -235,12 +232,12 @@ function showScrollChrome(active) {
       fq.setAttribute('aria-pressed', 'false');
       fq.setAttribute('aria-label', '开启 30 秒交互漫游');
       if ($('film-quick-glyph')) $('film-quick-glyph').textContent = '▸';
-      if ($('film-quick-label')) $('film-quick-label').textContent = '开启漫游';
+      if ($('film-quick-label')) $('film-quick-label').textContent = '漫游';
     }
     $('timeline-scrub-zone').hidden = !active;
     $('stop-film').hidden = !active;
     if (active) {
-      $('stop-film').textContent = '归位';
+      $('stop-film').textContent = '↺';
       $('stop-film').setAttribute('aria-label', '重置回序幕星环');
     } else {
       resetStageReadout();
@@ -288,10 +285,6 @@ const narrativeHud = createNarrativeHudController({
   ensureThresholdDismissed: () => { if (!thresholdDismissed) enterArchiveFromThreshold(); },
   wakeAudio,
   showScrollChrome,
-  onSelectBeacon: (beacon) => {
-    focusUi.showPhoto(beacon.photoIndex, beacon.instanceIndex, 1, beacon.story);
-  },
-  reticle,
   soundscape,
   reducedMotion,
   hasOpenDialog,
@@ -319,6 +312,11 @@ const filmExport = createCinemaExportController({
 
 window.addEventListener('pointerdown', () => { wakeAudio(); noteStageActivity(); }, { passive: true });
 window.addEventListener('pointermove', (event) => {
+  if (universe && window.innerWidth > 0 && window.innerHeight > 0) {
+    const nx = (event.clientX / window.innerWidth) * 2 - 1;
+    const ny = 1 - (event.clientY / window.innerHeight) * 2;
+    universe._recordFluidPointer(nx, ny);
+  }
   if (event.pointerType === 'touch') return;
   noteStageActivity();
 }, { passive: true });

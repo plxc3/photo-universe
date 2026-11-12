@@ -1,3 +1,5 @@
+import { storyForPhoto } from './narrative-script.js';
+
 /**
  * Full-Frame Exhibition HUD caption choreography & graceful HTML fallback modal
  * for environments where WebGL is unavailable.
@@ -85,7 +87,7 @@ export function createFocusUiController({
     $('focus-tone').textContent = parts.join(' · ');
     const storyEl = $('focus-story');
     if (storyEl) {
-      const note = activeStoryNote || photo.story || '';
+      const note = activeStoryNote || storyForPhoto(photo);
       storyEl.textContent = note;
       storyEl.hidden = !note;
     }

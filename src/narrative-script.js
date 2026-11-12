@@ -121,7 +121,30 @@ const BEACON_ARCHETYPES = [
   },
 ];
 
-const SCRAMBLE_GLYPHS = '01/+*#<>:=÷×·░▒';
+const SPECTRUM_STORIES = [
+  { maxKey: 0.14, note: '琥珀暖光落入银盐底片，定格时间星环里最初的温度。' },
+  { maxKey: 0.30, note: '林间与盛夏的苍翠切片，记录着生命向外舒展的呼吸频率。' },
+  { maxKey: 0.48, note: '海平线与远方风声交汇之处，每一次快门都在拓宽记忆的边界。' },
+  { maxKey: 0.68, note: '暮色沉入钴蓝深空，未曾言说的瞬间在静谧里持续发光。' },
+  { maxKey: 0.84, note: '微光穿过暮紫薄雾，将流逝的傍晚凝结成可触摸的晶体。' },
+  { maxKey: 1.00, note: '在微红余烬与光影交界处，最珍贵的面孔跨越岁月依然清晰。' },
+  { maxKey: 2.00, note: '抽离喧嚣色彩之后，纯粹的银盐明暗留住了记忆原本的骨骼。' },
+];
+
+/**
+ * Generates a subtle curatorial story whisper for any photograph based on its chromatic spectrum.
+ */
+export function storyForPhoto(photo) {
+  if (!photo) return '';
+  if (photo.story) return photo.story;
+  const key = Number.isFinite(photo.spectralKey) ? photo.spectralKey : 0.08;
+  for (let i = 0; i < SPECTRUM_STORIES.length; i++) {
+    if (key <= SPECTRUM_STORIES[i].maxKey) return SPECTRUM_STORIES[i].note;
+  }
+  return SPECTRUM_STORIES[0].note;
+}
+
+const SCRAMBLE_GLYPHS = '01/+*#<>:=÷×·';
 
 /**
  * Returns the active narrative Act descriptor (`0..4`) for timeline `seconds`.

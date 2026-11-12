@@ -314,9 +314,115 @@ export class DarkroomPipeline {
       ...targetOptions,
       depthBuffer: false,
     });
+    const fluidOptions = {
+      type: isWebGL2 ? THREE.HalfFloatType : THREE.UnsignedByteType,
+      minFilter: THREE.LinearFilter,
+      magFilter: THREE.LinearFilter,
+      depthBuffer: false,
+      stencilBuffer: false,
+    };
+    this.fluidTargetA = new THREE.WebGLRenderTarget(1, 1, fluidOptions);
+    this.fluidTargetB = new THREE.WebGLRenderTarget(1, 1, fluidOptions);
+    this._fluidPrevPointer = new THREE.Vector2(-1, -1);
 
     this.orthoCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
     this.quadGeometry = new THREE.PlaneGeometry(2, 2);
+
+    this.fluidSimMaterial = new THREE.ShaderMaterial({
+      uniforms: {
+        tPrevFluid: { value: null },
+        uFluidTexel: { value: new THREE.Vector2(1 / 480, 1 / 270) },
+        uPointerCurr: { value: new THREE.Vector2(0.5, 0.5) },
+        uPointerPrev: { value: new THREE.Vector2(0.5, 0.5) },
+        uPointerMoved: { value: 0 },
+        uAspect: { value: 1.777 },
+        uTime: { value: 0 },
+        uWarp: { value: 0 },
+      },
+      depthTest: false,
+      depthWrite: false,
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = vec4(position.xy, 0.0, 1.0);
+        }
+      `,
+      fragmentShader: `
+        precision highp float;
+        uniform sampler2D tPrevFluid;
+        uniform vec2 uFluidTexel;
+        uniform vec2 uPointerCurr;
+        uniform vec2 uPointerPrev;
+        uniform float uPointerMoved;
+        uniform float uAspect;
+        uniform float uTime;
+        uniform float uWarp;
+        varying vec2 vUv;
+
+        float segDistSq(vec2 p, vec2 a, vec2 b) {
+          vec2 pa = p - a;
+          vec2 ba = b - a;
+          float h = clamp(dot(pa, ba) / max(1e-6, dot(ba, ba)), 0.0, 1.0);
+          vec2 d = pa - ba * h;
+          return dot(d, d);
+        }
+
+        void main() {
+          vec4 c0 = texture2D(tPrevFluid, vUv);
+          vec2 prevVel = c0.rg * 2.0 - 1.0;
+          float prevDens = c0.b;
+
+          // Organic 2D curl-noise swirl so ribbons billow like zero-gravity plasma
+          vec2 curl = vec2(
+            sin(vUv.y * 10.5 + uTime * 1.15) + cos(vUv.x * 7.2 - uTime * 0.75),
+            cos(vUv.x * 10.5 - uTime * 1.05) - sin(vUv.y * 7.2 + uTime * 0.85)
+          ) * (0.016 * prevDens);
+
+          vec2 advectOffset = (prevVel * 0.013 + curl) * vec2(1.0 / max(0.2, uAspect), 1.0);
+          vec2 backUv = clamp(vUv - advectOffset, 0.002, 0.998);
+
+          vec4 adv = texture2D(tPrevFluid, backUv) * 0.60;
+          adv += texture2D(tPrevFluid, clamp(backUv + vec2(uFluidTexel.x, 0.0), 0.002, 0.998)) * 0.10;
+          adv += texture2D(tPrevFluid, clamp(backUv - vec2(uFluidTexel.x, 0.0), 0.002, 0.998)) * 0.10;
+          adv += texture2D(tPrevFluid, clamp(backUv + vec2(0.0, uFluidTexel.y), 0.002, 0.998)) * 0.10;
+          adv += texture2D(tPrevFluid, clamp(backUv - vec2(0.0, uFluidTexel.y), 0.002, 0.998)) * 0.10;
+
+          vec2 vel = (adv.rg * 2.0 - 1.0) * 0.935;
+          float dens = adv.b * 0.954;
+          float hue = adv.a;
+
+          if (uPointerMoved > 0.001) {
+            vec2 pAspect = vec2(uAspect, 1.0);
+            vec2 p = vUv * pAspect;
+            vec2 a = uPointerPrev * pAspect;
+            vec2 b = uPointerCurr * pAspect;
+            vec2 delta = b - a;
+            float segLen = length(delta);
+            float d2 = segDistSq(p, a, b);
+
+            float speedGain = smoothstep(0.0004, 0.022, segLen);
+            float core = exp(-d2 / 0.00019) * speedGain;
+            float aura = exp(-d2 / 0.00185) * speedGain * 0.42;
+            vec2 dir = segLen > 1e-4 ? (delta / segLen) : vec2(0.0);
+
+            vel = clamp(vel + dir * min(1.0, segLen * 20.0) * (core + aura), -1.0, 1.0);
+            float inject = core * 0.92 + aura * 0.34;
+            if (inject > 0.01) {
+              hue = mix(hue, fract(uTime * 0.11 + segLen * 1.8), clamp(inject * 1.4, 0.0, 1.0));
+            }
+            dens = clamp(dens + inject, 0.0, 1.0);
+          }
+
+          if (dens < 0.002) {
+            vel = vec2(0.0);
+            dens = 0.0;
+          }
+
+          gl_FragColor = vec4(clamp(vel * 0.5 + 0.5, 0.0, 1.0), dens, hue);
+        }
+      `,
+    });
 
     this.halationMaterial = new THREE.ShaderMaterial({
       uniforms: {
@@ -363,15 +469,13 @@ export class DarkroomPipeline {
       uniforms: {
         tScene: { value: null },
         tHalation: { value: null },
+        tFluid: { value: null },
         uSceneTexel: { value: new THREE.Vector2(1 / 1280, 1 / 720) },
         uTime: { value: 0 },
         uWarp: { value: 0 },
         uFocusBlur: { value: 0 },
         uHalation: { value: 0.30 },
         uGrain: { value: 0.016 },
-        uPointerUv: { value: new THREE.Vector2(0.5, 0.5) },
-        uPointerVel: { value: new THREE.Vector2(0, 0) },
-        uRippleEnergy: { value: 0 },
         uAudioEnergy: { value: 0 },
       },
       depthTest: false,
@@ -387,15 +491,13 @@ export class DarkroomPipeline {
         precision highp float;
         uniform sampler2D tScene;
         uniform sampler2D tHalation;
+        uniform sampler2D tFluid;
         uniform vec2 uSceneTexel;
         uniform float uTime;
         uniform float uWarp;
         uniform float uFocusBlur;
         uniform float uHalation;
         uniform float uGrain;
-        uniform vec2 uPointerUv;
-        uniform vec2 uPointerVel;
-        uniform float uRippleEnergy;
         uniform float uAudioEnergy;
         varying vec2 vUv;
 
@@ -438,17 +540,15 @@ export class DarkroomPipeline {
           vec2 centered = vUv - vec2(0.5);
           float r2 = dot(centered, centered);
 
-          // Active Theory Hydra-inspired screen-space glass wake & velocity refraction
-          float aspect = uSceneTexel.y / max(1e-6, uSceneTexel.x);
-          vec2 toPtr = (vUv - uPointerUv) * vec2(aspect, 1.0);
-          float ptrDist2 = dot(toPtr, toPtr);
-          float ptrDist = sqrt(ptrDist2 + 1e-6);
-          float wake = exp(-ptrDist2 * 36.0) * uRippleEnergy * (1.0 - smoothstep(0.1, 0.6, uFocusBlur));
-          float ringWave = sin(ptrDist * 42.0 - uTime * 8.5) * exp(-ptrDist2 * 18.0) * uRippleEnergy * 0.35;
-          vec2 fluidRefract = uPointerVel * (wake * 0.014) + (toPtr / ptrDist) * (ringWave * 0.0028);
+          // Active Theory v6 GPU Ping-Pong Iridescent Fluid Ribbon & Prism Refraction
+          vec4 fluidSample = texture2D(tFluid, vUv);
+          vec2 fluidVel = fluidSample.rg * 2.0 - 1.0;
+          float fluidSuppress = 1.0 - smoothstep(0.18, 0.72, uFocusBlur);
+          float fluidDens = fluidSample.b * fluidSuppress;
+          vec2 fluidRefract = fluidVel * (fluidDens * 0.022);
           vec2 baseUv = clamp(vUv - fluidRefract, 0.001, 0.999);
 
-          vec2 dispersion = centered * r2 * (0.0085 * uWarp) + fluidRefract * 0.55;
+          vec2 dispersion = centered * r2 * (0.0095 * uWarp) + fluidVel * (fluidDens * 0.0065);
 
           vec3 color;
           if (uFocusBlur > 0.006) {
@@ -461,8 +561,17 @@ export class DarkroomPipeline {
           }
 
           vec3 glow = texture2D(tHalation, baseUv).rgb;
-          float liveHalation = uHalation * (1.0 + uFocusBlur * 0.45 + uAudioEnergy * 0.24 + uWarp * 0.16);
+          float liveHalation = uHalation * (1.0 + uFocusBlur * 0.45 + uAudioEnergy * 0.24 + uWarp * 0.18);
           color += glow * liveHalation;
+
+          // Iridescent spectral plasma ribbon emission in linear space
+          if (fluidDens > 0.003) {
+            vec3 prism = 0.54 + 0.46 * cos(6.283185 * (fluidSample.a + fluidDens * 0.32 + vec3(0.02, 0.19, 0.41)));
+            vec3 atTone = mix(vec3(0.32, 0.50, 1.0), prism, 0.72);
+            float coreTube = pow(fluidDens, 2.35) * 0.58 + pow(fluidDens, 1.2) * 0.13;
+            color += atTone * coreTube;
+          }
+
           color = mix(clamp(color, 0.0, 1.0), filmicShoulder(color * 1.08), 0.42);
 
           // Optical lens vignette deepens subtly during close-up 3D Gaze
@@ -480,6 +589,10 @@ export class DarkroomPipeline {
         }
       `,
     });
+
+    this.fluidSimMesh = new THREE.Mesh(this.quadGeometry, this.fluidSimMaterial);
+    this.fluidSimScene = new THREE.Scene();
+    this.fluidSimScene.add(this.fluidSimMesh);
 
     this.halationMesh = new THREE.Mesh(this.quadGeometry, this.halationMaterial);
     this.halationScene = new THREE.Scene();
@@ -499,6 +612,12 @@ export class DarkroomPipeline {
     const bh = Math.max(1, Math.floor(h * 0.28));
     this.bloomTarget.setSize(bw, bh);
     this.halationMaterial.uniforms.uTexelSize.value.set(1 / bw, 1 / bh);
+    const fw = Math.max(1, Math.floor(w * 0.36));
+    const fh = Math.max(1, Math.floor(h * 0.36));
+    this.fluidTargetA.setSize(fw, fh);
+    this.fluidTargetB.setSize(fw, fh);
+    this.fluidSimMaterial.uniforms.uFluidTexel.value.set(1 / fw, 1 / fh);
+    this.fluidSimMaterial.uniforms.uAspect.value = w / Math.max(1, h);
   }
 
   render(scene, camera, {
@@ -506,7 +625,6 @@ export class DarkroomPipeline {
     warp = 0,
     focusBlur = 0,
     pointerUv = null,
-    pointerVel = null,
     rippleEnergy = 0,
     audioEnergy = 0,
   } = {}) {
@@ -515,6 +633,31 @@ export class DarkroomPipeline {
       return;
     }
     const previousTarget = this.renderer.getRenderTarget();
+
+    // 1. Step GPU Ping-Pong Fluid Ribbon FBO
+    const fu = this.fluidSimMaterial.uniforms;
+    fu.tPrevFluid.value = this.fluidTargetA.texture;
+    fu.uTime.value = time;
+    fu.uWarp.value = warp;
+    if (pointerUv && rippleEnergy > 0.002) {
+      if (this._fluidPrevPointer.x < 0) {
+        this._fluidPrevPointer.copy(pointerUv);
+      }
+      fu.uPointerPrev.value.copy(this._fluidPrevPointer);
+      fu.uPointerCurr.value.copy(pointerUv);
+      fu.uPointerMoved.value = 1;
+      this._fluidPrevPointer.copy(pointerUv);
+    } else {
+      if (pointerUv) this._fluidPrevPointer.copy(pointerUv);
+      fu.uPointerMoved.value = 0;
+    }
+    this.renderer.setRenderTarget(this.fluidTargetB);
+    this.renderer.render(this.fluidSimScene, this.orthoCamera);
+    const tmpFluid = this.fluidTargetA;
+    this.fluidTargetA = this.fluidTargetB;
+    this.fluidTargetB = tmpFluid;
+
+    // 2. Render 3D Scene & Quarter-Res Photochemical Halation
     this.renderer.setRenderTarget(this.sceneTarget);
     this.renderer.render(scene, camera);
 
@@ -522,15 +665,14 @@ export class DarkroomPipeline {
     this.renderer.setRenderTarget(this.bloomTarget);
     this.renderer.render(this.halationScene, this.orthoCamera);
 
+    // 3. Final Optical Composite
     const cu = this.compositeMaterial.uniforms;
     cu.tScene.value = this.sceneTarget.texture;
     cu.tHalation.value = this.bloomTarget.texture;
+    cu.tFluid.value = this.fluidTargetA.texture;
     cu.uTime.value = time;
     cu.uWarp.value = warp;
     cu.uFocusBlur.value = focusBlur;
-    if (pointerUv) cu.uPointerUv.value.copy(pointerUv);
-    if (pointerVel) cu.uPointerVel.value.copy(pointerVel);
-    cu.uRippleEnergy.value = rippleEnergy;
     cu.uAudioEnergy.value = audioEnergy;
     this.renderer.setRenderTarget(previousTarget);
     this.renderer.render(this.compositeScene, this.orthoCamera);
@@ -539,7 +681,10 @@ export class DarkroomPipeline {
   dispose() {
     this.sceneTarget.dispose();
     this.bloomTarget.dispose();
+    this.fluidTargetA.dispose();
+    this.fluidTargetB.dispose();
     this.quadGeometry.dispose();
+    this.fluidSimMaterial.dispose();
     this.halationMaterial.dispose();
     this.compositeMaterial.dispose();
   }

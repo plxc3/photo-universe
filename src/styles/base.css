@@ -21,17 +21,17 @@
 
 :root {
   --ground: #020204;
-  --surface: #0c0c10;
-  --raised: #16161d;
-  --text: #f5f1ea;
-  --muted: #b6afa6;
-  --faint: #7d7770;
-  --control: #4a453f;
-  --accent: #c8a27c;
-  --photo-accent: #c8a27c;
-  --reticle-accent: rgba(245, 241, 234, 0.48);
-  --negative: #dc9882;
-  --hairline: rgba(245, 241, 234, 0.09);
+  --surface: #0a0b10;
+  --raised: #13151f;
+  --text: #f4f5f8;
+  --muted: #a6adbd;
+  --faint: #6c7385;
+  --control: #3c4150;
+  --accent: #9ab4ff;
+  --photo-accent: #9ab4ff;
+  --reticle-accent: rgba(154, 180, 255, 0.72);
+  --negative: #ff8e8e;
+  --hairline: rgba(244, 245, 248, 0.08);
   --dur-fast: 0.22s;
   --dur-base: 0.48s;
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
@@ -48,7 +48,7 @@
 }
 
 ::selection {
-  background: rgba(200, 162, 124, 0.28);
+  background: rgba(154, 180, 255, 0.28);
   color: var(--text);
 }
 
@@ -203,7 +203,7 @@ button:focus-visible, a:focus-visible, input:focus-visible {
   }
 }
 
-/* Borderless Optical Viewfinder Reticle (Fine Desktop Pointer Only) */
+/* Active Theory v6 SVG Radial Optical Reticle (Fine Desktop Pointer Only) */
 .cursor-reticle {
   display: none;
 }
@@ -214,11 +214,12 @@ button:focus-visible, a:focus-visible, input:focus-visible {
     top: 0;
     left: 0;
     z-index: 25;
-    width: 24px;
-    height: 24px;
-    margin: -12px 0 0 -12px;
+    width: 32px;
+    height: 32px;
+    margin: -16px 0 0 -16px;
     pointer-events: none;
     opacity: 0;
+    --warp-progress: 0;
     will-change: transform, opacity;
     transition: opacity 0.28s var(--ease-out);
   }
@@ -226,89 +227,103 @@ button:focus-visible, a:focus-visible, input:focus-visible {
     opacity: 1;
   }
   .focus-active .cursor-reticle,
-  .threshold-locked .cursor-reticle,
   .recording-active .cursor-reticle,
   .clean .cursor-reticle {
     opacity: 0 !important;
   }
-  .cursor-reticle .reticle-frame {
+  .reticle-svg {
     display: block;
     width: 100%;
     height: 100%;
+    transform: rotate(-90deg);
+    transition: transform 0.36s var(--ease-out);
+  }
+  .reticle-track {
+    stroke: rgba(244, 245, 248, 0.22);
+    stroke-width: 1;
+    transition: stroke 0.24s ease;
+  }
+  .reticle-arc {
+    stroke: var(--reticle-accent, #8ab4ff);
+    stroke-width: 1.5;
+    stroke-dasharray: 94.25;
+    stroke-dashoffset: calc(94.25 * (1 - var(--warp-progress, 0)));
+    stroke-linecap: round;
+    transition: stroke 0.24s ease;
+  }
+  .reticle-center {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 3px;
+    height: 3px;
+    margin: -1.5px 0 0 -1.5px;
     border-radius: 50%;
-    border: 1px solid rgba(245, 241, 234, 0.22);
-    transition: transform 0.36s var(--ease-out), border-radius 0.36s var(--ease-out), border-color 0.24s ease;
+    background: rgba(244, 245, 248, 0.85);
+    transition: transform 0.28s var(--ease-out), background 0.24s ease;
   }
-  .cursor-reticle[data-state='photo'] .reticle-frame {
-    transform: scale(1.55);
-    border-radius: 2px;
-    border-color: var(--reticle-accent);
+  .cursor-reticle[data-state='photo'] .reticle-svg {
+    transform: rotate(-90deg) scale(1.38);
   }
-  .cursor-reticle[data-state='beacon'] .reticle-frame {
-    transform: rotate(45deg) scale(1.32);
-    border-radius: 1px;
-    border-color: var(--reticle-accent);
-    box-shadow: 0 0 14px rgba(200, 162, 124, 0.35);
+  .cursor-reticle[data-state='photo'] .reticle-track {
+    stroke: var(--reticle-accent);
   }
-  .cursor-reticle[data-state='warp'] .reticle-frame {
-    transform: scale(1.88);
-    border-color: var(--accent);
-    box-shadow: 0 0 22px rgba(200, 162, 124, 0.55), inset 0 0 10px rgba(200, 162, 124, 0.25);
+  .cursor-reticle[data-state='photo'] .reticle-center {
+    background: var(--reticle-accent);
+    transform: scale(1.4);
   }
-  .cursor-reticle[data-state='drag'] .reticle-frame {
-    transform: scale(0.76);
-    border-color: rgba(200, 162, 124, 0.72);
+  .cursor-reticle[data-state='warp'] .reticle-svg {
+    transform: rotate(-90deg) scale(1.56);
+    filter: drop-shadow(0 0 10px rgba(138, 180, 255, 0.55));
   }
-  .cursor-reticle[data-state='ui'] .reticle-frame {
-    transform: scale(0.45);
-    border-color: rgba(245, 241, 234, 0.12);
+  .cursor-reticle[data-state='drag'] .reticle-svg {
+    transform: rotate(-90deg) scale(0.72);
+  }
+  .cursor-reticle[data-state='ui'] .reticle-svg {
+    transform: rotate(-90deg) scale(0.38);
+    opacity: 0.35;
+  }
+  .cursor-reticle[data-state='ui'] .reticle-center {
+    transform: scale(0);
   }
   .reticle-tag {
     position: absolute;
-    left: 22px;
+    left: 26px;
     top: 50%;
-    transform: translate3d(-6px, -50%, 0);
+    transform: translate3d(-4px, -50%, 0);
     display: inline-flex;
     align-items: baseline;
-    gap: 7px;
-    padding: 5px 12px;
-    background: radial-gradient(ellipse at center, rgba(2, 2, 4, 0.78) 0%, rgba(2, 2, 4, 0.44) 64%, transparent 100%);
+    gap: 6px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: rgba(6, 7, 12, 0.72);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    backdrop-filter: blur(10px);
     white-space: nowrap;
     opacity: 0;
-    text-shadow: var(--ink-shadow);
-    transition: opacity 0.22s ease, transform 0.3s var(--ease-out);
+    transition: opacity 0.2s ease, transform 0.28s var(--ease-out);
   }
   .cursor-reticle[data-state='photo'] .reticle-tag,
-  .cursor-reticle[data-state='beacon'] .reticle-tag,
   .cursor-reticle[data-state='warp'] .reticle-tag {
     opacity: 1;
     transform: translate3d(0, -50%, 0);
   }
   .cursor-reticle[data-flip='left'] .reticle-tag {
     left: auto;
-    right: 22px;
-  }
-  .reticle-dot {
-    width: 5px;
-    height: 5px;
-    border-radius: 50%;
-    background: var(--reticle-accent);
-    box-shadow: 0 0 8px var(--reticle-accent);
-    align-self: center;
-    flex: none;
+    right: 26px;
   }
   .reticle-number {
-    font-family: var(--brand);
-    font-style: italic;
-    font-size: 12px;
-    color: var(--text);
+    font-size: 9.5px;
+    font-weight: 600;
+    letter-spacing: 0.14em;
+    color: #9ab4ff;
     font-variant-numeric: tabular-nums;
   }
   .reticle-label {
     font-size: 10.5px;
-    letter-spacing: 0.04em;
-    color: rgba(245, 241, 234, 0.88);
-    max-width: 196px;
+    letter-spacing: 0.05em;
+    color: rgba(244, 245, 248, 0.90);
+    max-width: 176px;
     overflow: hidden;
     text-overflow: ellipsis;
   }

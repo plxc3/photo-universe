@@ -44,11 +44,14 @@ export function createInstancedCardMaterial(texture, uniforms) {
         vWorldNormal = normalize(mat3(modelMatrix) * vec3(0.0, 0.0, 1.0));
       #endif
       float hoverDist = length(cardWorldCenter - uHoverWorld);
-      vHoverLift = uHoverStrength * exp(-(hoverDist * hoverDist) / 16.0);
+      vHoverLift = uHoverStrength * exp(-(hoverDist * hoverDist) / 22.0);
+      float neighborWave = uHoverStrength * smoothstep(1.8, 4.8, hoverDist) * exp(-max(0.0, hoverDist - 3.6) * 0.34);
+      vec3 pushDir = hoverDist > 0.05 ? normalize(cardWorldCenter - uHoverWorld) : vec3(0.0);
       vFocusKeep = 1.0 - smoothstep(0.04, 0.20, length(cardWorldCenter - uFocusWorld));
       transformed *= mix(1.0, 1.0 - vFocusKeep, max(uFocusSlotHide, smoothstep(0.02, 0.28, uFocusAmount)));
-      transformed.z += vHoverLift * 0.36 * (1.0 - uFocusAmount);
-      transformed.xy *= 1.0 + vHoverLift * 0.052 * (1.0 - uFocusAmount);`);
+      transformed.z += (vHoverLift * 0.68 - neighborWave * 0.16) * (1.0 - uFocusAmount);
+      transformed.xy += pushDir.xy * (neighborWave * 0.32 * (1.0 - uFocusAmount));
+      transformed.xy *= 1.0 + vHoverLift * 0.082 * (1.0 - uFocusAmount);`);
     shader.vertexShader = shader.vertexShader.replace('#include <project_vertex>', `#include <project_vertex>
       vPaperUv = uv;
       vPhotoNormal = normalize(normalMatrix * mat3(instanceMatrix) * vec3(0.0, 0.0, 1.0));
@@ -93,9 +96,10 @@ export function createInstancedCardMaterial(texture, uniforms) {
       float focusDim = mix(1.0, mix(0.20, 1.0, vFocusKeep), uFocusAmount);
       vec2 edge = min(vPaperUv, vec2(1.0) - vPaperUv);
       float edgeDistance = min(edge.x, edge.y);
-      float bevel = (1.0 - smoothstep(0.008, 0.030, edgeDistance)) * 0.06;
-      diffuseColor.rgb = (diffuseColor.rgb * activeShade + vec3(spec + fresnel + bevel) * vec3(1.0, 0.96, 0.90)) * backShade * horizonFade;
-      diffuseColor.rgb *= (1.0 + vHoverLift * 0.32 * (1.0 - uFocusAmount)) * focusDim;
+      float bevel = (1.0 - smoothstep(0.008, 0.032, edgeDistance)) * (0.06 + vHoverLift * 0.28);
+      vec3 rimTint = mix(vec3(1.0, 0.96, 0.90), vec3(0.68, 0.84, 1.0), vHoverLift * 0.75);
+      diffuseColor.rgb = (diffuseColor.rgb * activeShade + vec3(spec + fresnel + bevel) * rimTint) * backShade * horizonFade;
+      diffuseColor.rgb *= (1.0 + vHoverLift * 0.38 * (1.0 - uFocusAmount)) * focusDim;
       float aa = max(0.003, min(fwidth(edgeDistance), 0.014));
       diffuseColor.rgb *= smoothstep(0.0, aa, edgeDistance);
       diffuseColor.rgb = mix(uPaperBackground, diffuseColor.rgb, uReveal);`);

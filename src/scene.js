@@ -662,7 +662,6 @@ export class PhotoUniverse extends UniverseMixinBase {
         warp,
         focusBlur,
         pointerUv: this._fluidUv || null,
-        pointerVel: this._fluidVel || null,
         rippleEnergy: this._fluidEnergy || 0,
         audioEnergy: this.audioEnergy || 0,
       });
