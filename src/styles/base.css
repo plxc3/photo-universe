@@ -225,7 +225,6 @@ button:focus-visible, a:focus-visible, input:focus-visible {
   .cursor-reticle.visible {
     opacity: 1;
   }
-  .is-idle .cursor-reticle,
   .focus-active .cursor-reticle,
   .threshold-locked .cursor-reticle,
   .recording-active .cursor-reticle,

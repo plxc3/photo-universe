@@ -46,7 +46,7 @@ const SPEED_PRESETS = [
 ];
 const ROMAN_ACTS = ['I', 'II', 'III', 'IV', 'V'];
 const SCENE_POSITIONS = 3000;
-const IDLE_STAGE_MS = 2200;
+const IDLE_STAGE_MS = 7500;
 
 let speedPresetIndex = 1;
 let universe;
@@ -221,6 +221,13 @@ function syncPlaying() {
 function showScrollChrome(active) {
   $('app').classList.toggle('scroll-active', active);
   if (!universe?.film) {
+    const fq = $('film-quick');
+    if (fq) {
+      fq.setAttribute('aria-pressed', 'false');
+      fq.setAttribute('aria-label', '开启 30 秒交互漫游');
+      if ($('film-quick-glyph')) $('film-quick-glyph').textContent = '▸';
+      if ($('film-quick-label')) $('film-quick-label').textContent = '开启漫游';
+    }
     $('timeline-scrub-zone').hidden = !active;
     $('stop-film').hidden = !active;
     if (active) {
@@ -806,6 +813,7 @@ document.addEventListener('keydown', (event) => {
   const lowerKey = event.key.toLowerCase();
   if (lowerKey === 'h') { toggleClean(); return; }
   if (lowerKey === 'm') { $('sound-toggle')?.click(); return; }
+  if (lowerKey === 'f' && !busy && !filmExport.isRecording()) { $('film-quick')?.click(); return; }
   if (lowerKey === 'i' && !busy && !filmExport.isRecording()) { gallery.openGallery(); return; }
   if (!busy && !filmExport.isRecording() && !universe.focusState && ['1', '2', '3', '4'].includes(event.key)) {
     const targetMode = FORMATIONS[Number(event.key) - 1]?.id;

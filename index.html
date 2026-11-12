@@ -88,9 +88,12 @@
         </div>
 
         <div class="hud-corner hud-br">
-          <button id="film-quick" type="button" class="text-link" aria-label="开启 30 秒漫游">漫游</button>
+          <button id="film-quick" type="button" class="text-link accent-link roam-trigger" aria-pressed="false" aria-label="开启 30 秒交互漫游">
+            <span id="film-quick-glyph" class="roam-glyph" aria-hidden="true">▸</span>
+            <span id="film-quick-label">开启漫游</span>
+          </button>
           <span class="hud-sep" aria-hidden="true">·</span>
-          <button id="import-quick" type="button" class="text-link" aria-label="导入本地照片">导入</button>
+          <button id="import-quick" type="button" class="text-link" aria-label="导入本地照片">导入相册</button>
         </div>
       </section>
 

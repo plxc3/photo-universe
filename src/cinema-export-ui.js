@@ -94,6 +94,13 @@ export function createCinemaExportController({
       $('stop-film').textContent = recorder?.state === 'recording' ? '结束录制' : '结束漫游';
       $('stop-film').setAttribute('aria-label', recorder?.state === 'recording' ? '结束录制' : '结束漫游');
     }
+    const fq = $('film-quick');
+    if (fq) {
+      fq.setAttribute('aria-pressed', String(active));
+      fq.setAttribute('aria-label', active ? '结束 30 秒交互漫游' : '开启 30 秒交互漫游');
+      if ($('film-quick-glyph')) $('film-quick-glyph').textContent = active ? '■' : '▸';
+      if ($('film-quick-label')) $('film-quick-label').textContent = active ? '结束漫游' : '开启漫游';
+    }
     $('app').classList.toggle('film-active', active);
     $('stop-film').hidden = !active && !$('app').classList.contains('scroll-active');
     $('timeline-scrub-zone').hidden = (!active && !$('app').classList.contains('scroll-active')) || Boolean(recorder);
@@ -280,7 +287,10 @@ export function createCinemaExportController({
     });
 
     $('film')?.addEventListener('click', playFilm);
-    $('film-quick')?.addEventListener('click', playFilm);
+    $('film-quick')?.addEventListener('click', () => {
+      if (getState().universe?.film) leaveFilm();
+      else playFilm();
+    });
     for (const el of [$('act-roman'), $('film-act'), $('film-time')]) {
       el?.addEventListener('click', () => {
         const { universe, busy } = getState();
